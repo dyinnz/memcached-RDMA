@@ -5733,6 +5733,7 @@ int main (int argc, char **argv) {
 #endif
 
     if (0 !=init_rdma_resources()) {
+        printf("init_rdma_resources ok!\n");
         return -1;
     }
 
@@ -5765,6 +5766,7 @@ int main (int argc, char **argv) {
     }
 
     if (0 != attach_rdma_listen_event()) {
+        printf("attach_rdma_listen_event ok!\n");
         return -1;
     }
 
@@ -5903,6 +5905,8 @@ static int rdma_build_single(const char *interface,
                 rdma_freeaddrinfo(ai);
                 return 1;
             }
+
+            printf("rdma_listen on port %d\n", ntohs(rdma_get_src_port(listen_id)));
 
             if (NULL != portnumber_file) {
                 fprintf(portnumber_file, "RDMA PS %s: %u\n",
