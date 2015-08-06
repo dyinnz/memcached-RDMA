@@ -5732,6 +5732,10 @@ int main (int argc, char **argv) {
 
 #endif
 
+    if (0 !=init_rdma_resources()) {
+        return -1;
+    }
+
     if (NULL == settings.socketpath) {
         const char *portnumber_filename = getenv("MEMCACHED_PORT_FILENAME");
         char temp_portnumber_filename[PATH_MAX];
@@ -5759,7 +5763,10 @@ int main (int argc, char **argv) {
             rename(temp_portnumber_filename, portnumber_filename);
         }
     }
- 
+
+    if (0 != attach_rdma_listen_event()) {
+        return -1;
+    }
 
     /* Give the sockets a moment to open. I know this is dumb, but the error
      * is only an advisory.
@@ -5807,7 +5814,7 @@ int main (int argc, char **argv) {
  * rdma listenning callback 
  ******************************************************************************/
 static void rdma_cm_event_handle(int fd, short libevent_event, void *arg) {
-
+    printf("there is event handler\n");
 }
 
 /***************************************************************************//**
@@ -5835,6 +5842,7 @@ static int init_rdma_resources() {
         perror("rdma_create_event_channel()");
         return -1;
     }
+    return 0;
 }
 
 /***************************************************************************//**
