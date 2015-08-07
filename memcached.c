@@ -70,14 +70,37 @@ enum rdma_transport {
 struct rdma_context {
     struct rdma_event_channel   *cm_channel;
     struct event                listen_event; 
+    int                         cq_number;
 } rdma_context;
+
+#define RDMA_HEAD_BUFF 1024
+
+struct cm_context {
+    /* given */
+    struct rdma_cm_id           *id;
+
+    /* shared */
+    struct ibv_comp_channel     *comp_channel;
+    struct ibv_pd               *pd;
+    struct ibv_cq               *cq;
+    struct event                *poll_event;
+
+    /* unique */
+    struct ibv_mr               *send_mr;
+    struct ibv_mr               *recv_mr;
+
+    char                        recv_buff[RDMA_HEAD_BUFF];
+};
+
 
 static void rdma_cm_event_handle(int fd, short libevent_event, void *arg);
 static int attach_rdma_listen_event();
 static int init_rdma_resources();
 static int rdma_build_single();
 static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file);
-
+static int handle_connect_request(struct rdma_cm_id *id);
+static int preamble_qp(struct ibv_context *device_context, struct cm_context *cm_ctx);
+static void rdma_disconnect_and_release(struct rdma_cm_id *id);
 
 /*
  * forward declarations
@@ -5813,38 +5836,60 @@ int main (int argc, char **argv) {
  ******************************************************************************/
 
 /***************************************************************************//**
- * rdma listenning callback 
- ******************************************************************************/
-static void rdma_cm_event_handle(int fd, short libevent_event, void *arg) {
-    printf("there is event handler\n");
-}
-
-/***************************************************************************//**
- * attach rdma listen event to libevent
- ******************************************************************************/
-static int attach_rdma_listen_event() {
-    memset(&rdma_context.listen_event, 0, sizeof(struct event));
-
-    event_set(&rdma_context.listen_event, rdma_context.cm_channel->fd, EV_READ | EV_PERSIST,
-            rdma_cm_event_handle, NULL);
-    event_base_set(main_base, &rdma_context.listen_event);
-
-    if (0 != event_add(&rdma_context.listen_event, NULL)) {
-        perror("event_add()");
-        return -1;
-    }
-    return 0;
-}
-
-/***************************************************************************//**
  * init global rdma resources 
  ******************************************************************************/
 static int init_rdma_resources() {
+    memset(&rdma_context, 0, sizeof(struct rdma_context));
+
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
         return -1;
     }
+
+    rdma_context.cq_number = 1024;      /* TODO: temporary number */
+
     return 0;
+}
+
+/***************************************************************************//**
+ * buid rmda str_listening
+ *
+ ******************************************************************************/
+static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file) {
+
+    if (settings.inter == NULL) {
+        return rdma_build_single(NULL, port, transport, portnumber_file);
+
+    } else {
+        char *b;
+        int ret = 0;
+        char *str_list = strdup(settings.inter);
+
+        if (str_list == NULL) {
+            fprintf(stderr, "Failed to allocate memory for parsing server interface string\n");
+            return 1;
+        }
+        for (char *p = strtok_r(str_list, ";,", &b);
+                p != NULL;
+                p = strtok_r(NULL, ";,", &b)) {
+            int the_port = port;
+            char *s = strchr(p, ':');
+            if (s != NULL) {
+                *s = '\0';
+                ++s;
+                if (!safe_strtol(s, &the_port)) {
+                    fprintf(stderr, "Invalid port number: \"%s\"", s);
+                    return 1;
+                }
+            }
+            if (strcmp(p, "*") == 0) {
+                p = NULL;
+            }
+            ret |= rdma_build_single(p, the_port, transport, portnumber_file);
+        }
+        free(str_list);
+        return ret;
+    }
 }
 
 /***************************************************************************//**
@@ -5921,44 +5966,156 @@ static int rdma_build_single(const char *interface,
 }
 
 /***************************************************************************//**
- * buid rmda str_listening
+ * attach rdma listen event to libevent
  *
  ******************************************************************************/
-static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file) {
+static int attach_rdma_listen_event() {
+    memset(&rdma_context.listen_event, 0, sizeof(struct event));
 
-    if (settings.inter == NULL) {
-        return rdma_build_single(NULL, port, transport, portnumber_file);
+    event_set(&rdma_context.listen_event, rdma_context.cm_channel->fd, EV_READ | EV_PERSIST,
+            rdma_cm_event_handle, NULL);
+    event_base_set(main_base, &rdma_context.listen_event);
 
-    } else {
-        char *b;
-        int ret = 0;
-        char *str_list = strdup(settings.inter);
-
-        if (str_list == NULL) {
-            fprintf(stderr, "Failed to allocate memory for parsing server interface string\n");
-            return 1;
-        }
-        for (char *p = strtok_r(str_list, ";,", &b);
-                p != NULL;
-                p = strtok_r(NULL, ";,", &b)) {
-            int the_port = port;
-            char *s = strchr(p, ':');
-            if (s != NULL) {
-                *s = '\0';
-                ++s;
-                if (!safe_strtol(s, &the_port)) {
-                    fprintf(stderr, "Invalid port number: \"%s\"", s);
-                    return 1;
-                }
-            }
-            if (strcmp(p, "*") == 0) {
-                p = NULL;
-            }
-            ret |= rdma_build_single(p, the_port, transport, portnumber_file);
-        }
-        free(str_list);
-        return ret;
+    if (0 != event_add(&rdma_context.listen_event, NULL)) {
+        perror("event_add()");
+        return -1;
     }
+    return 0;
+}
+
+/***************************************************************************//**
+ * rdma listenning callback 
+ * 
+ ******************************************************************************/
+static void rdma_cm_event_handle(int fd, short libevent_event, void *arg) {
+    struct rdma_cm_event        *cm_event = NULL;
+
+    if (0 != rdma_get_cm_event(rdma_context.cm_channel, &cm_event)) {
+        perror("rdma_get_cm_event()");
+        return;
+    }
+    printf("RDMA CM event: %s\n", rdma_event_str(cm_event->event));
+
+    switch (cm_event->event) {
+        case RDMA_CM_EVENT_CONNECT_REQUEST:
+            handle_connect_request(cm_event->id);
+            break;
+
+        case RDMA_CM_EVENT_ESTABLISHED:
+            break;
+
+        case RDMA_CM_EVENT_DISCONNECTED:
+            rdma_disconnect_and_release(cm_event->id);
+            break;
+
+        default:
+            printf("Unhandled error: %d\n", cm_event->status);
+            break;
+    }
+
+    rdma_ack_cm_event(cm_event);
+}
+
+/***************************************************************************//**
+ * handle connect request 
+ *
+ ******************************************************************************/
+static int handle_connect_request(struct rdma_cm_id *id) {
+    struct cm_context    *cm_ctx = NULL;
+    struct ibv_qp_init_attr init_qp_attr;
+
+    cm_ctx = calloc(1, sizeof(struct cm_context));
+    if (0 != preamble_qp(id->verbs, cm_ctx)) {
+        return 0;
+    }
+
+    id->context = cm_ctx;
+    cm_ctx->id  = id; 
+
+    /* TODO: adjust the parameters */
+    memset(&init_qp_attr, 0, sizeof(init_qp_attr));
+	init_qp_attr.cap.max_send_wr = cm_ctx->cq->cqe;
+	init_qp_attr.cap.max_recv_wr = cm_ctx->cq->cqe;
+	init_qp_attr.cap.max_send_sge = 1;
+	init_qp_attr.cap.max_recv_sge = 1;
+	init_qp_attr.sq_sig_all = 1;
+	init_qp_attr.qp_type = IBV_QPT_RC;
+	init_qp_attr.send_cq = cm_ctx->cq;
+	init_qp_attr.recv_cq = cm_ctx->cq;
+
+    if (0 != rdma_create_qp(id, cm_ctx->pd, &init_qp_attr)) {
+        rdma_disconnect_and_release(id);
+        perror("rdma_create_qp()");
+        return -1;
+    }
+
+    if ( !(cm_ctx->recv_mr = rdma_reg_msgs(id, cm_ctx->recv_buff, RDMA_HEAD_BUFF)) ) {
+        rdma_disconnect_and_release(id);
+        perror("rdma_reg_msg()");
+        return -1;
+    }
+
+    if (0 != rdma_post_recv(id, cm_ctx, cm_ctx->recv_buff, RDMA_HEAD_BUFF, cm_ctx->recv_mr)) {
+        rdma_disconnect_and_release(id);
+        perror("rdma_post_recv()");
+        return -1;
+    }
+
+    if (0 != rdma_accept(id, NULL)) {
+        rdma_disconnect_and_release(id);
+        perror("rdma_accept()");
+        return -1;
+    }
+
+    printf("Comlete connection!\n");
+    return 0;
+}
+
+/***************************************************************************//**
+ * Prepare complete channel, protection domain, compelete queue for queue pair
+ *
+ ******************************************************************************/
+static int preamble_qp(struct ibv_context *device_context, struct cm_context *cm_ctx) {
+    /* TODO: query device_context if exists */
+
+    if ( !(cm_ctx->comp_channel = ibv_create_comp_channel(device_context)) ) {
+        perror("ibv_create_comp_channel()");
+        return -1;
+    }
+
+    if ( !(cm_ctx->pd = ibv_alloc_pd(device_context)) ) {
+        perror("ibv_alloc_pd()");
+        return -1;
+    }
+
+    if ( !(cm_ctx->cq = ibv_create_cq(device_context, 
+                    rdma_context.cq_number, NULL, cm_ctx->comp_channel, 0)) ) {
+        perror("ibv_create_cq()");
+        return -1;
+    }
+
+    if (0 != ibv_req_notify_cq(cm_ctx->cq, 0)) {
+        perror("ibv_reg_notify_cq()");
+        return -1;
+    }
+
+    return 0;
+}
+
+/***************************************************************************//**
+ * Release relative resources and disconnect this id
+ *
+ ******************************************************************************/
+static void rdma_disconnect_and_release(struct rdma_cm_id *id) {
+    struct cm_context     *cm_ctx = id->context;
+
+    rdma_dereg_mr(cm_ctx->send_mr);
+    rdma_dereg_mr(cm_ctx->recv_mr);
+
+    free(cm_ctx);
+
+    rdma_disconnect(id);
 }
 
 /**/
+
