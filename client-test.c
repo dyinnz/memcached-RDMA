@@ -43,7 +43,7 @@ int BuildConnect() {
 	attr.qp_context = id;
 	attr.sq_sig_all = 1;
 
-    if (0 != rdma_create_id(NULL, &id, cm_conn, RDMA_PS_TCP)) {
+    if (0 != rdma_create_ep(&id, res, NULL, &attr)) {
         perror("rdma_create_id():");
         return -1;
     }
@@ -53,7 +53,7 @@ int BuildConnect() {
         return -1;
     }
 
-    if (0 != rdma_post_recv(id, NULL, cm_conn->head_buff, RDMA_MAX_HEAD, cm_conn->recv_mr)) {
+    if (0 != rdma_post_recv(id, cm_conn, cm_conn->head_buff, RDMA_MAX_HEAD, cm_conn->recv_mr)) {
         perror("rdma_post_recv()");
         return -1;
     }
@@ -74,7 +74,7 @@ int BuildConnect() {
 
     rdma_disconnect(id);
     rdma_dereg_mr(cm_conn->recv_mr);
-    rdma_destroy_id(id);
+    rdma_destroy_ep(id);
     free(cm_conn);
 
     return 0;
