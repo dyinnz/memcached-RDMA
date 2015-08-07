@@ -73,7 +73,9 @@ struct rdma_context {
     int                         cq_number;
 } rdma_context;
 
-#define RDMA_HEAD_BUFF 1024
+#define RDMA_RECV_BUFF 1024
+#define WORK_QUEUE_SIZE 16
+#define POLL_WC_SIZE 8
 
 struct cm_context {
     /* given */
@@ -83,24 +85,27 @@ struct cm_context {
     struct ibv_comp_channel     *comp_channel;
     struct ibv_pd               *pd;
     struct ibv_cq               *cq;
-    struct event                *poll_event;
+    struct event                poll_event;
 
     /* unique */
     struct ibv_mr               *send_mr;
     struct ibv_mr               *recv_mr;
 
-    char                        recv_buff[RDMA_HEAD_BUFF];
+    char                        recv_buff[RDMA_RECV_BUFF];
 };
 
 
-static void rdma_cm_event_handle(int fd, short libevent_event, void *arg);
+static void rdma_cm_event_handler(int fd, short libevent_event, void *arg);
 static int attach_rdma_listen_event();
 static int init_rdma_resources();
 static int rdma_build_single();
 static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file);
 static int handle_connect_request(struct rdma_cm_id *id);
 static int preamble_qp(struct ibv_context *device_context, struct cm_context *cm_ctx);
-static void rdma_disconnect_and_release(struct rdma_cm_id *id);
+static void rdma_release_conn(struct rdma_cm_id *id);
+static int establish_connection_poll(struct event_base *base, struct cm_context *cm_ctx);
+static void cc_poll_event_handler(int fd, short libevent_event, void *arg);
+static void handle_work_complete(struct ibv_wc *wc);
 
 /*
  * forward declarations
@@ -5973,7 +5978,7 @@ static int attach_rdma_listen_event() {
     memset(&rdma_context.listen_event, 0, sizeof(struct event));
 
     event_set(&rdma_context.listen_event, rdma_context.cm_channel->fd, EV_READ | EV_PERSIST,
-            rdma_cm_event_handle, NULL);
+            rdma_cm_event_handler, NULL);
     event_base_set(main_base, &rdma_context.listen_event);
 
     if (0 != event_add(&rdma_context.listen_event, NULL)) {
@@ -5987,7 +5992,7 @@ static int attach_rdma_listen_event() {
  * rdma listenning callback 
  * 
  ******************************************************************************/
-static void rdma_cm_event_handle(int fd, short libevent_event, void *arg) {
+static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
     struct rdma_cm_event        *cm_event = NULL;
 
     if (0 != rdma_get_cm_event(rdma_context.cm_channel, &cm_event)) {
@@ -6005,7 +6010,7 @@ static void rdma_cm_event_handle(int fd, short libevent_event, void *arg) {
             break;
 
         case RDMA_CM_EVENT_DISCONNECTED:
-            rdma_disconnect_and_release(cm_event->id);
+            rdma_release_conn(cm_event->id);
             break;
 
         default:
@@ -6034,40 +6039,42 @@ static int handle_connect_request(struct rdma_cm_id *id) {
 
     /* TODO: adjust the parameters */
     memset(&init_qp_attr, 0, sizeof(init_qp_attr));
-	init_qp_attr.cap.max_send_wr = cm_ctx->cq->cqe;
-	init_qp_attr.cap.max_recv_wr = cm_ctx->cq->cqe;
-	init_qp_attr.cap.max_send_sge = 1;
-	init_qp_attr.cap.max_recv_sge = 1;
+	init_qp_attr.cap.max_send_wr = WORK_QUEUE_SIZE;
+	init_qp_attr.cap.max_recv_wr = WORK_QUEUE_SIZE;
+	init_qp_attr.cap.max_send_sge = WORK_QUEUE_SIZE;
+	init_qp_attr.cap.max_recv_sge = WORK_QUEUE_SIZE;
 	init_qp_attr.sq_sig_all = 1;
 	init_qp_attr.qp_type = IBV_QPT_RC;
 	init_qp_attr.send_cq = cm_ctx->cq;
 	init_qp_attr.recv_cq = cm_ctx->cq;
 
     if (0 != rdma_create_qp(id, cm_ctx->pd, &init_qp_attr)) {
-        rdma_disconnect_and_release(id);
         perror("rdma_create_qp()");
         return -1;
     }
 
-    if ( !(cm_ctx->recv_mr = rdma_reg_msgs(id, cm_ctx->recv_buff, RDMA_HEAD_BUFF)) ) {
-        rdma_disconnect_and_release(id);
+    if (0 != rdma_accept(id, NULL)) {
+        perror("rdma_accept()");
+        return -1;
+    }
+    printf("Accept new connection.");
+
+    if ( !(cm_ctx->recv_mr = rdma_reg_msgs(id, cm_ctx->recv_buff, RDMA_RECV_BUFF)) ) {
         perror("rdma_reg_msg()");
         return -1;
     }
 
-    if (0 != rdma_post_recv(id, cm_ctx, cm_ctx->recv_buff, RDMA_HEAD_BUFF, cm_ctx->recv_mr)) {
-        rdma_disconnect_and_release(id);
+    if (0 != rdma_post_recv(id, cm_ctx, cm_ctx->recv_buff, RDMA_RECV_BUFF, cm_ctx->recv_mr)) {
         perror("rdma_post_recv()");
         return -1;
     }
 
-    if (0 != rdma_accept(id, NULL)) {
-        rdma_disconnect_and_release(id);
-        perror("rdma_accept()");
+    if (0 != establish_connection_poll(main_base, cm_ctx)) {
+        printf("establish_connection_poll failed!");
+        rdma_disconnect(id);
         return -1;
     }
 
-    printf("Comlete connection!\n");
     return 0;
 }
 
@@ -6106,7 +6113,7 @@ static int preamble_qp(struct ibv_context *device_context, struct cm_context *cm
  * Release relative resources and disconnect this id
  *
  ******************************************************************************/
-static void rdma_disconnect_and_release(struct rdma_cm_id *id) {
+static void rdma_release_conn(struct rdma_cm_id *id) {
     struct cm_context     *cm_ctx = id->context;
 
     rdma_dereg_mr(cm_ctx->send_mr);
@@ -6114,8 +6121,91 @@ static void rdma_disconnect_and_release(struct rdma_cm_id *id) {
 
     free(cm_ctx);
 
-    rdma_disconnect(id);
+    rdma_destroy_qp(id);
+    rdma_destroy_id(id);
 }
 
-/**/
+/***************************************************************************//**
+ * Establish poll event for new connection
+ *
+ ******************************************************************************/
+static int establish_connection_poll(struct event_base *base, struct cm_context *cm_ctx) {
+    event_set(&cm_ctx->poll_event, cm_ctx->comp_channel->fd, EV_READ | EV_PERSIST,
+            cc_poll_event_handler, cm_ctx);
+    event_base_set(base, &cm_ctx->poll_event);
+    if (0 != event_add(&cm_ctx->poll_event, NULL)) {
+        perror("event_add()");
+        return -1;
+    }
+    return 0;
+}
+
+/***************************************************************************//**
+ * poll handler for comlete channel
+ *
+ ******************************************************************************/
+static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
+    struct cm_context       *cm_ctx = arg;
+    struct ibv_cq           *cq = NULL;
+    struct ibv_wc           wc[POLL_WC_SIZE];
+    
+    int         cqe = 0, 
+                i = 0;
+    void        *null = NULL; 
+
+    memset(wc, 0, sizeof(wc));
+
+    if (0 != ibv_get_cq_event(cm_ctx->comp_channel, &cq, &null)) {
+        perror("ibv_get_cq_event()");
+        return;
+    }
+    ibv_ack_cq_events(cq, 1);
+
+    if (0 != ibv_req_notify_cq(cq, 0)) {
+        perror("ibv_reg_notify_cq()");
+        return;
+    }
+
+    cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
+    if (0 == cqe || 1 == cqe) {
+        perror("ibv_poll_cq()");
+        return;
+    }
+
+    for (i = 0; i < cqe; ++i) {
+        handle_work_complete(&wc[i]);
+    }
+}
+
+/***************************************************************************//**
+ * handle work complete
+ *
+ ******************************************************************************/
+static void handle_work_complete(struct ibv_wc *wc) {
+    struct cm_context *cm_ctx = (struct cm_context*)wc->wr_id;
+
+    if (IBV_WC_SUCCESS != wc->status) {
+        printf("Bad wc!\n");
+        return;
+    }
+
+    /* Test whether this completion is a recive */ 
+    if (wc->opcode & IBV_WC_RECV) {
+        printf("[SERVER has received:]\n%s\n", cm_ctx->recv_mr->addr);
+        return;
+    }
+
+    switch (wc->opcode) {
+        case IBV_WC_SEND:
+            break;
+        case IBV_WC_RDMA_WRITE:
+            break;
+        case IBV_WC_RDMA_READ:
+            break;
+        default:
+            break;
+    }
+
+}
+
 
