@@ -6168,11 +6168,6 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
     }
     ibv_ack_cq_events(cq, 1);
 
-    if (0 != ibv_req_notify_cq(cq, 0)) {
-        perror("ibv_reg_notify_cq()");
-        return;
-    }
-
     cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
     if (cqe <= 0) {
         perror("ibv_poll_cq()");
@@ -6181,6 +6176,11 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
 
     for (i = 0; i < cqe; ++i) {
         handle_work_complete(&wc[i]);
+    }
+
+    if (0 != ibv_req_notify_cq(cq, 0)) {
+        perror("ibv_reg_notify_cq()");
+        return;
     }
 }
 
@@ -6196,13 +6196,21 @@ static void handle_work_complete(struct ibv_wc *wc) {
         return;
     }
 
+    static int post_recv = 1;
+    static int recv_number = 0;
+
     /* Test whether this completion is a recive */ 
     if (wc->opcode & IBV_WC_RECV) {
-        printf("[SERVER has received:]\n%s\n", (char*)cm_ctx->recv_mr->addr);
         if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->recv_buff, RDMA_RECV_BUFF, cm_ctx->recv_mr)) {
             perror("rdma_post_recv()");
             rdma_disconnect(cm_ctx->id);
             return;
+        }
+        ++post_recv;
+        ++recv_number;
+        if (recv_number % 100 == 0) {
+            printf("[SERVER has received %d:]\n%s\n", recv_number, (char*)cm_ctx->recv_mr->addr);
+            printf("Post recv: %d\n", post_recv);
         }
         return;
     }

@@ -1,7 +1,6 @@
 /***************************************************************************//**
  * Author:  Dyinnz
- * Date  :  2015-08-08
- * Email :  ml_143@sina.com
+ * Date  :  2015-08-08 * Email :  ml_143@sina.com
  * Description: 
  *   a simple benchmark for memcached using RDMA
  ******************************************************************************/
@@ -206,9 +205,9 @@ void *thread_run(void *arg) {
  ******************************************************************************/
 int 
 main(int argc, char *argv[]) {
-    clock_t     start,
-                finish;
     pthread_t   *threads = NULL;
+    struct timespec start,
+                    finish;
     char        c = '\0';
     int         i = 0;
 
@@ -243,8 +242,9 @@ main(int argc, char *argv[]) {
 
     threads = calloc(thread_number, sizeof(pthread_t));
 
-    start = clock();
+    clock_gettime(CLOCK_REALTIME, &start);
 
+    /*
     for (i = 0; i < thread_number; ++i) {
         if (0 != pthread_create(threads+i, NULL, thread_run, NULL)) {
             return -1;
@@ -255,10 +255,14 @@ main(int argc, char *argv[]) {
         pthread_join(threads[i], NULL);
         printf("THREAD %d terminated.\n", i);
     }
+    */
+    /*thread_run();*/
+    for (i = 0; i < 10000000; ++i) {}
 
-    finish = clock();
+    clock_gettime(CLOCK_REALTIME, &finish);
 
-    printf("Cost time: %f secs\n", (double)(finish-start)/CLOCKS_PER_SEC);
+    printf("Cost time: %lf secs\n", (double)(start.tv_sec-finish.tv_sec + 
+                (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
 
     return 0;
 }
