@@ -39,7 +39,6 @@ build_connection() {
 	struct rdma_addrinfo    hints = { .ai_port_space = RDMA_PS_TCP },
                             *res = NULL;
 
-    struct rdma_cm_id       *id = NULL;
     struct cm_connection    *cm_conn = NULL;
 
 
@@ -54,15 +53,14 @@ build_connection() {
 	attr.cap.max_send_wr = attr.cap.max_recv_wr = 1;
 	attr.cap.max_send_sge = attr.cap.max_recv_sge = 1;
 	attr.cap.max_inline_data = 16;
-	attr.qp_context = id;
 	attr.sq_sig_all = 1;
 
-    if (0 != rdma_create_ep(&id, res, NULL, &attr)) {
+    if (0 != rdma_create_ep(&cm_conn->id, res, NULL, &attr)) {
         perror("rdma_create_id():");
         return NULL;
     }
 
-    if (0 != rdma_connect(id, NULL)) {
+    if (0 != rdma_connect(cm_conn->id, NULL)) {
         perror("rdma_connect()");
         return NULL;
     }
@@ -96,22 +94,22 @@ send_msg(struct cm_connection *cm_conn, char *msg, size_t size) {
         return -1;
     }
 
-    if (0 != rdma_post_recv(cm_conn->id, cm_conn, msg, size, cm_conn->send_mr)) {
-        perror("rdma_post_recv()");
+    if (0 != rdma_post_send(cm_conn->id, cm_conn, msg, size, cm_conn->send_mr, 0)) {
+        perror("rdma_post_send()");
         rdma_dereg_mr(cm_conn->send_mr);
         return -1;
     }
 
-    cqe = rdma_get_recv_comp(cm_conn->id, &wc);
+    cqe = rdma_get_send_comp(cm_conn->id, &wc);
     if (cqe <= 0) {
-        perror("rdma_get_recv_comp()");
+        perror("rdma_get_send_comp()");
         rdma_dereg_mr(cm_conn->send_mr);
         return -1;
     }
 
     printf("send msgs OK!\n");
     rdma_dereg_mr(cm_conn->send_mr);
-    return -1;
+    return 0;
 }
 
 /***************************************************************************//**

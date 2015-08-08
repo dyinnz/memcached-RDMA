@@ -6010,6 +6010,7 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
             break;
 
         case RDMA_CM_EVENT_DISCONNECTED:
+            rdma_ack_cm_event(cm_event);
             rdma_release_conn(cm_event->id);
             break;
 
@@ -6018,7 +6019,9 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
             break;
     }
 
-    rdma_ack_cm_event(cm_event);
+    if (RDMA_CM_EVENT_DISCONNECTED != cm_event->event) {
+        rdma_ack_cm_event(cm_event);
+    }
 }
 
 /***************************************************************************//**
@@ -6061,11 +6064,13 @@ static int handle_connect_request(struct rdma_cm_id *id) {
 
     if ( !(cm_ctx->recv_mr = rdma_reg_msgs(id, cm_ctx->recv_buff, RDMA_RECV_BUFF)) ) {
         perror("rdma_reg_msg()");
+        rdma_disconnect(id);
         return -1;
     }
 
     if (0 != rdma_post_recv(id, cm_ctx, cm_ctx->recv_buff, RDMA_RECV_BUFF, cm_ctx->recv_mr)) {
         perror("rdma_post_recv()");
+        rdma_disconnect(id);
         return -1;
     }
 
@@ -6191,7 +6196,12 @@ static void handle_work_complete(struct ibv_wc *wc) {
 
     /* Test whether this completion is a recive */ 
     if (wc->opcode & IBV_WC_RECV) {
-        printf("[SERVER has received:]\n%s\n", cm_ctx->recv_mr->addr);
+        printf("[SERVER has received:]\n%s\n", (char*)cm_ctx->recv_mr->addr);
+        if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->recv_buff, RDMA_RECV_BUFF, cm_ctx->recv_mr)) {
+            perror("rdma_post_recv()");
+            rdma_disconnect(cm_ctx->id);
+            return;
+        }
         return;
     }
 
