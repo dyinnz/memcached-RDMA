@@ -5994,12 +5994,14 @@ static int attach_rdma_listen_event() {
  ******************************************************************************/
 static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
     struct rdma_cm_event        *cm_event = NULL;
+    struct rdma_cm_id           *id = NULL;
 
     if (0 != rdma_get_cm_event(rdma_context.cm_channel, &cm_event)) {
         perror("rdma_get_cm_event()");
         return;
     }
     printf("RDMA CM event: %s\n", rdma_event_str(cm_event->event));
+    id = cm_event->id;
 
     switch (cm_event->event) {
         case RDMA_CM_EVENT_CONNECT_REQUEST:
@@ -6011,7 +6013,7 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
 
         case RDMA_CM_EVENT_DISCONNECTED:
             rdma_ack_cm_event(cm_event);
-            rdma_release_conn(cm_event->id);
+            rdma_release_conn(id);
             break;
 
         default:
