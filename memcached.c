@@ -6123,7 +6123,7 @@ static int preamble_qp(struct ibv_context *device_context, struct cm_context *cm
 static void rdma_release_conn(struct rdma_cm_id *id) {
     struct cm_context     *cm_ctx = id->context;
 
-    rdma_dereg_mr(cm_ctx->send_mr);
+    /* rdma_dereg_mr(cm_ctx->send_mr); */
     rdma_dereg_mr(cm_ctx->recv_mr);
 
     free(cm_ctx);
@@ -6174,7 +6174,7 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
     }
 
     cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
-    if (0 == cqe || 1 == cqe) {
+    if (cqe <= 0) {
         perror("ibv_poll_cq()");
         return;
     }

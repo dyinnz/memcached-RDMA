@@ -1,36 +1,61 @@
+/***************************************************************************//**
+ * Author:  Dyinnz
+ * Date  :  2015-08-08
+ * Email :  ml_143@sina.com
+ * Description: 
+ *   a simple benchmark for memcached using RDMA
+ ******************************************************************************/
+
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 
-#include "rdma/rdma_cma.h"
-#include "rdma/rdma_verbs.h"
+#include <pthread.h>
+#include <unistd.h>
+
+#include <rdma/rdma_cma.h>
+#include <rdma/rdma_verbs.h>
 
 #define RDMA_RECV_BUFF 1024
 #define RDMA_MAX_HEAD 16
-#define THREAD_NUMBER 4
 
+/***************************************************************************//**
+ * Testing parameters
+ *
+ ******************************************************************************/
+static char     *str_server = "127.0.0.1";
+static char     *str_port = "11211";
+static int      thread_number = 1;
+static int      request_number = 10000;
+static int      last_time = 1000;    /* secs */
+static int      is_recv = 0;
+
+/***************************************************************************//**
+ * Relative resources around connection
+ *
+ ******************************************************************************/
 struct cm_connection {
     struct rdma_cm_id   *id;
+
     struct ibv_mr       *recv_mr;
     struct ibv_mr       *send_mr;
 
-    char                *recv_buff;
-    char                *send_buff;
-
+    char                recv_buff[RDMA_RECV_BUFF];
     char                head_buff[RDMA_MAX_HEAD];
 };
 
-static char *str_server = "127.0.0.1";
-static char *str_port = "11211";
-
+/***************************************************************************//**
+ * Function prototypes
+ *
+ ******************************************************************************/
 static struct cm_connection* build_connection();
 static void disconnect(struct cm_connection *cm_conn);
 static int send_msg(struct cm_connection *cm_conn, char *msg, size_t size);
-/*static void recv_msg(struct cm_connection *cm_conn, char *msg);*/
+static int recv_msg(struct cm_connection *cm_conn);
 
 /***************************************************************************//**
- * build connection
+ * Build RDMA connection, return a pointer to struct cm_connection
  *
  ******************************************************************************/
 static struct cm_connection*
@@ -38,11 +63,9 @@ build_connection() {
     struct ibv_qp_init_attr attr;
 	struct rdma_addrinfo    hints = { .ai_port_space = RDMA_PS_TCP },
                             *res = NULL;
+    struct cm_connection    *cm_conn = calloc(1, sizeof(struct cm_connection));
 
-    struct cm_connection    *cm_conn = NULL;
-
-
-    cm_conn = calloc(1, sizeof(struct cm_connection));
+    int     ret = 0;
 
     if (0 != rdma_getaddrinfo(str_server, str_port, &hints, &res)) {
         perror("rdma_getaddrinfo():");
@@ -50,18 +73,27 @@ build_connection() {
     }
 
     memset(&attr, 0, sizeof(attr));
-	attr.cap.max_send_wr = attr.cap.max_recv_wr = 1;
-	attr.cap.max_send_sge = attr.cap.max_recv_sge = 1;
+	attr.cap.max_send_wr = attr.cap.max_recv_wr = 8;
+	attr.cap.max_send_sge = attr.cap.max_recv_sge = 8;
 	attr.cap.max_inline_data = 16;
 	attr.sq_sig_all = 1;
 
-    if (0 != rdma_create_ep(&cm_conn->id, res, NULL, &attr)) {
-        perror("rdma_create_id():");
+    ret = rdma_create_ep(&cm_conn->id, res, NULL, &attr);
+    rdma_freeaddrinfo(res);
+    if (0 != ret) {
+        perror("rdma_create_ep():");
         return NULL;
     }
 
     if (0 != rdma_connect(cm_conn->id, NULL)) {
+        rdma_destroy_ep(cm_conn->id);
         perror("rdma_connect()");
+        return NULL;
+    }
+
+    if ( !(cm_conn->recv_mr = rdma_reg_msgs(cm_conn->id, cm_conn->recv_buff, RDMA_RECV_BUFF)) ) {
+        rdma_destroy_ep(cm_conn->id);
+        perror("rdma_reg_msgs():");
         return NULL;
     }
 
@@ -69,7 +101,7 @@ build_connection() {
 }
 
 /***************************************************************************//**
- * disconnect 
+ * Disconnect the RDMA connection, and release relative resources
  *
  ******************************************************************************/
 static void 
@@ -81,7 +113,7 @@ disconnect(struct cm_connection *cm_conn) {
 }
 
 /***************************************************************************//**
- * send msg 
+ * Send message by RDMA send operation
  *
  ******************************************************************************/
 static int 
@@ -107,19 +139,44 @@ send_msg(struct cm_connection *cm_conn, char *msg, size_t size) {
         return -1;
     }
 
-    printf("send msgs OK!\n");
+    /* printf("send msgs OK!\n"); */
     rdma_dereg_mr(cm_conn->send_mr);
     return 0;
 }
 
 /***************************************************************************//**
- * thread function
+ * Receive message bt RDMA recv operation
+ *
+ ******************************************************************************/
+static int
+recv_msg(struct cm_connection *cm_conn) {
+    struct ibv_wc   wc;
+    int             cqe = 0;
+
+    if (0 != rdma_post_recv(cm_conn->id, cm_conn, cm_conn->recv_buff, RDMA_RECV_BUFF, cm_conn->recv_mr)) {
+        perror("rdma_post_recv()");
+        return -1;
+    }
+
+    cqe = rdma_get_recv_comp(cm_conn->id, &wc);
+    if (cqe <= 0) {
+        perror("rdma_get_recv_comp()");
+        return -1;
+    }
+
+    return 0;
+}
+
+/***************************************************************************//**
+ * The thread run function
  * 
  ******************************************************************************/
+#define SEND_BUFF_SIZE 32
+
 void *thread_run(void *arg) {
     struct cm_connection    *cm_conn = NULL;
 
-    char    send_buff[100] = "hello world";
+    char    send_buff[SEND_BUFF_SIZE] = "hello world";
     int     i = 0;
 
 
@@ -127,9 +184,14 @@ void *thread_run(void *arg) {
         return NULL;
     }
 
-    for (i = 0; i < 100; ++i) {
-        if (0 != send_msg(cm_conn, send_buff, 100)) {
+    for (i = 0; i < request_number; ++i) {
+        if (0 != send_msg(cm_conn, send_buff, SEND_BUFF_SIZE)) {
             printf("send_msg() error!\n");
+            break;
+        }
+
+        if (is_recv && 0 != recv_msg(cm_conn)) {
+            printf("recv_msg() error!\n");
             break;
         }
     }
@@ -143,21 +205,60 @@ void *thread_run(void *arg) {
  *
  ******************************************************************************/
 int 
-main() {
-    pthread_t threads[THREAD_NUMBER];
-    int     i = 0;
+main(int argc, char *argv[]) {
+    clock_t     start,
+                finish;
+    pthread_t   *threads = NULL;
+    char        c = '\0';
+    int         i = 0;
 
-    memset(threads, 0, sizeof(threads));
+    while (-1 != (c = getopt(argc, argv,
+            "c:"    /* thread number */
+            "r:"    /* request number per thread */
+            "t:"    /* last time, secs */
+            "p:"    /* listening port */
+            "s:"    /* server ip */
+            "R"     /* whether receive message from server */
+    ))) {
+        switch (c) {
+            case 'c':
+                thread_number = atoi(optarg);
+                break;
+            case 'r':
+                request_number = atoi(optarg);
+                break;
+            case 't':
+                last_time = atoi(optarg);
+                break;
+            case 'p':
+                str_port = optarg;
+                break;
+            case 's':
+                str_server = optarg;
+                break;
+            default:
+                assert(0);
+        }
+    }
 
-    for (i = 0; i < THREAD_NUMBER; ++i) {
-        if (0 != pthread_create(&threads[i], NULL, thread_run, NULL)) {
+    threads = calloc(thread_number, sizeof(pthread_t));
+
+    start = clock();
+
+    for (i = 0; i < thread_number; ++i) {
+        if (0 != pthread_create(threads+i, NULL, thread_run, NULL)) {
             return -1;
         }
     }
 
-    for (i = 0; i < THREAD_NUMBER; ++i) {
+    for (i = 0; i < thread_number; ++i) {
         pthread_join(threads[i], NULL);
+        printf("THREAD %d terminated.\n", i);
     }
+
+    finish = clock();
+
+    printf("Cost time: %f secs\n", (double)(finish-start)/CLOCKS_PER_SEC);
 
     return 0;
 }
