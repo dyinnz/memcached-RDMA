@@ -6014,6 +6014,7 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
         case RDMA_CM_EVENT_DISCONNECTED:
             rdma_ack_cm_event(cm_event);
             rdma_release_conn(id);
+            return;     /* return early due to ack cm event */
             break;
 
         default:
