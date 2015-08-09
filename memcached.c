@@ -75,7 +75,7 @@ struct rdma_context {
 
 #define RDMA_RECV_BUFF 1024
 #define WORK_QUEUE_SIZE 16
-#define POLL_WC_SIZE 8
+#define POLL_WC_SIZE 16
 
 struct cm_context {
     /* given */
@@ -6167,13 +6167,23 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
         perror("ibv_get_cq_event()");
         return;
     }
-    ibv_ack_cq_events(cq, 1);
+    
+    static int ack_events = 0;
+    if (++ack_events == 8) {
+        ibv_ack_cq_events(cq, 8);
+        ack_events = 0;
+    }
+
+    printf("get a cq event, sleep 3 secs\n");
+    sleep(3);
 
     cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
     if (cqe <= 0) {
         perror("ibv_poll_cq()");
         return;
     }
+
+    printf("Get cqe: %d\n", cqe);
 
     for (i = 0; i < cqe; ++i) {
         handle_work_complete(&wc[i]);
@@ -6209,10 +6219,10 @@ static void handle_work_complete(struct ibv_wc *wc) {
         }
         ++post_recv;
         ++recv_number;
-        if (recv_number % 100 == 0) {
+        //if (recv_number % 100 == 0) {
             printf("[SERVER has received %d:]\n%s\n", recv_number, (char*)cm_ctx->recv_mr->addr);
             printf("Post recv: %d\n", post_recv);
-        }
+        //}
         return;
     }
 
