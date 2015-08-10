@@ -77,29 +77,6 @@ struct rdma_context {
 #define WORK_QUEUE_SIZE 16
 #define POLL_WC_SIZE 16
 
-struct cm_context {
-    /* given */
-    struct rdma_cm_id           *id;
-
-    /* shared */
-    struct ibv_comp_channel     *comp_channel;
-    struct ibv_pd               *pd;
-    struct ibv_cq               *cq;
-    struct event                poll_event;
-
-    /* unique */
-    struct ibv_mr               *send_mr;
-    struct ibv_mr               *recv_mr;
-
-    char                        recv_buff[RDMA_RECV_BUFF];
-
-    /* statistics */
-    int                         total_cqe;
-    int                         total_recv_msg;
-    int                         total_post_recv;
-};
-
-
 static void rdma_cm_event_handler(int fd, short libevent_event, void *arg);
 static int attach_rdma_listen_event();
 static int init_rdma_resources();
@@ -108,10 +85,11 @@ static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_
 static int handle_connect_request(struct rdma_cm_id *id);
 static int preamble_qp(struct ibv_context *device_context, struct cm_context *cm_ctx);
 static void rdma_release_conn(struct rdma_cm_id *id);
-static int establish_connection_poll(struct event_base *base, struct cm_context *cm_ctx);
 static void cc_poll_event_handler(int fd, short libevent_event, void *arg);
 static void handle_work_complete(struct ibv_wc *wc);
-
+int init_rdma_new_conn(struct cm_context *cm_ctx, enum conn_states init_state,
+                   const int read_buffer_size, struct event_base *base);
+ 
 /*
  * forward declarations
  */
@@ -6075,20 +6053,9 @@ static int handle_connect_request(struct rdma_cm_id *id) {
     }
     printf("Accept new connection.\n");
 
-    if ( !(cm_ctx->recv_mr = rdma_reg_msgs(id, cm_ctx->recv_buff, RDMA_RECV_BUFF)) ) {
-        perror("rdma_reg_msg()");
-        rdma_disconnect(id);
-        return -1;
-    }
 
-    if (0 != rdma_post_recv(id, cm_ctx, cm_ctx->recv_buff, RDMA_RECV_BUFF, cm_ctx->recv_mr)) {
-        perror("rdma_post_recv()");
-        rdma_disconnect(id);
-        return -1;
-    }
-    cm_ctx->total_post_recv += 1;
-
-    if (0 != establish_connection_poll(main_base, cm_ctx)) {
+    // TODO: rdma_new_conn
+    if (0) {
         printf("establish_connection_poll failed!");
         rdma_disconnect(id);
         return -1;
@@ -6142,21 +6109,6 @@ static void rdma_release_conn(struct rdma_cm_id *id) {
 
     rdma_destroy_qp(id);
     rdma_destroy_id(id);
-}
-
-/***************************************************************************//**
- * Establish poll event for new connection
- *
- ******************************************************************************/
-static int establish_connection_poll(struct event_base *base, struct cm_context *cm_ctx) {
-    event_set(&cm_ctx->poll_event, cm_ctx->comp_channel->fd, EV_READ | EV_PERSIST,
-            cc_poll_event_handler, cm_ctx);
-    event_base_set(base, &cm_ctx->poll_event);
-    if (0 != event_add(&cm_ctx->poll_event, NULL)) {
-        perror("event_add()");
-        return -1;
-    }
-    return 0;
 }
 
 /***************************************************************************//**
@@ -6222,7 +6174,7 @@ static void handle_work_complete(struct ibv_wc *wc) {
     /* Test whether this completion is a recive */ 
     if (wc->opcode & IBV_WC_RECV) {
         cm_ctx->total_recv_msg += 1;
-        if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->recv_buff, RDMA_RECV_BUFF, cm_ctx->recv_mr)) {
+        if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->rbuf, cm_ctx->rsize, cm_ctx->recv_mr)) {
             perror("rdma_post_recv()");
             rdma_disconnect(cm_ctx->id);
             return;
@@ -6246,6 +6198,52 @@ static void handle_work_complete(struct ibv_wc *wc) {
             break;
     }
 
+}
+
+
+/***************************************************************************//**
+ * init other connection resources
+ *
+ ******************************************************************************/
+int
+init_rdma_new_conn(struct cm_context *cm_ctx, enum conn_states init_state,
+                   const int read_buffer_size, struct event_base *base) {
+    cm_ctx->rsize = read_buffer_size;
+    cm_ctx->wsize = DATA_BUFFER_SIZE;
+
+    cm_ctx->rbuf = malloc((size_t)cm_ctx->rsize);
+    cm_ctx->wbuf = malloc((size_t)cm_ctx->wsize);
+
+    if (cm_ctx->rbuf == 0 || cm_ctx->wbuf == 0) {
+        printf("Failed to allocate buffers for connection\n");
+        rdma_disconnect(cm_ctx->id);
+        return -1;
+    }
+
+    if ( !(cm_ctx->recv_mr = rdma_reg_msgs(cm_ctx->id, cm_ctx->rbuf, read_buffer_size)) ) {
+        perror("rdma_reg_msg()");
+        rdma_disconnect(cm_ctx->id);
+        return -1;
+    }
+
+    if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->rbuf, read_buffer_size, cm_ctx->recv_mr)) {
+        perror("rdma_post_recv()");
+        rdma_disconnect(cm_ctx->id);
+        return -1;
+    }
+
+    cm_ctx->total_post_recv += 1;
+    cm_ctx->state = init_state;
+
+    event_set(&cm_ctx->poll_event, cm_ctx->comp_channel->fd, EV_READ | EV_PERSIST,
+            cc_poll_event_handler, cm_ctx);
+    event_base_set(base, &cm_ctx->poll_event);
+
+    if (event_add(&cm_ctx->poll_event, 0) == -1) {
+        perror("event_add()");
+        return -1;
+    }
+    return 0;
 }
 
 
