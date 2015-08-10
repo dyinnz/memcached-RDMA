@@ -60,7 +60,7 @@ static int recv_msg(struct cm_connection *cm_conn);
 static struct cm_connection*
 build_connection() {
     struct ibv_qp_init_attr attr;
-	struct rdma_addrinfo    hints = { .ai_port_space = RDMA_PS_TCP },
+    struct rdma_addrinfo    hints = { .ai_port_space = RDMA_PS_TCP },
                             *res = NULL;
     struct cm_connection    *cm_conn = calloc(1, sizeof(struct cm_connection));
 
@@ -72,10 +72,10 @@ build_connection() {
     }
 
     memset(&attr, 0, sizeof(attr));
-	attr.cap.max_send_wr = attr.cap.max_recv_wr = 8;
-	attr.cap.max_send_sge = attr.cap.max_recv_sge = 8;
-	attr.cap.max_inline_data = 16;
-	attr.sq_sig_all = 1;
+    attr.cap.max_send_wr = attr.cap.max_recv_wr = 8;
+    attr.cap.max_send_sge = attr.cap.max_recv_sge = 8;
+    attr.cap.max_inline_data = 16;
+    attr.sq_sig_all = 1;
 
     ret = rdma_create_ep(&cm_conn->id, res, NULL, &attr);
     rdma_freeaddrinfo(res);
@@ -142,6 +142,42 @@ send_msg(struct cm_connection *cm_conn, char *msg, size_t size) {
     rdma_dereg_mr(cm_conn->send_mr);
     return 0;
 }
+
+/*
+static int 
+send_msg(struct cm_connection *cm_conn, char *msg, size_t size) {
+    struct ibv_wc   wc;
+    int             cqe = 0;
+
+    if ( !(cm_conn->send_mr = rdma_reg_msgs(cm_conn->id, msg, size)) ) {
+        perror("rdma_reg_msgs():");
+        return -1;
+    }
+
+    if (0 != rdma_post_send(cm_conn->id, cm_conn, msg, size, cm_conn->send_mr, 0)) {
+        perror("rdma_post_send()");
+        rdma_dereg_mr(cm_conn->send_mr);
+        return -1;
+    }
+
+    while (true) {
+        cqe = ibv_poll_cq(cm_conn->id->send_cq, q, &wc);
+        if (IBV_WC_SUCCESS == wc.status && wc.opcode & IBV_WC_SEND) {
+            break;
+        }
+    }
+
+    if (cqe <= 0) {
+        perror("rdma_get_send_comp()");
+        rdma_dereg_mr(cm_conn->send_mr);
+        return -1;
+    }
+
+    // printf("send msgs OK!\n");
+    rdma_dereg_mr(cm_conn->send_mr);
+    return 0;
+}
+*/
 
 /***************************************************************************//**
  * Receive message bt RDMA recv operation
@@ -246,25 +282,30 @@ main(int argc, char *argv[]) {
 
     clock_gettime(CLOCK_REALTIME, &start);
 
-    /*
-    for (i = 0; i < thread_number; ++i) {
-        if (0 != pthread_create(threads+i, NULL, thread_run, NULL)) {
-            return -1;
+    if (1 == thread_number) {
+        thread_run(NULL);
+
+    } else {
+        for (i = 0; i < thread_number; ++i) {
+            printf("Thread %d\n begin\n", i);
+
+            if (0 != pthread_create(threads+i, NULL, thread_run, NULL)) {
+                return -1;
+            }
+        }
+
+        for (i = 0; i < thread_number; ++i) {
+            pthread_join(threads[i], NULL);
+            printf("Thread %d terminated.\n", i);
         }
     }
 
-    for (i = 0; i < thread_number; ++i) {
-        pthread_join(threads[i], NULL);
-        printf("THREAD %d terminated.\n", i);
-    }
-    */
-    /*thread_run();*/
-    for (i = 0; i < 10000000; ++i) {}
-
     clock_gettime(CLOCK_REALTIME, &finish);
 
-    printf("Cost time: %lf secs\n", (double)(start.tv_sec-finish.tv_sec + 
+    printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
                 (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
+
+    free(threads);
 
     return 0;
 }

@@ -6055,14 +6055,14 @@ static int handle_connect_request(struct rdma_cm_id *id) {
 
     /* TODO: adjust the parameters */
     memset(&init_qp_attr, 0, sizeof(init_qp_attr));
-	init_qp_attr.cap.max_send_wr = WORK_QUEUE_SIZE;
-	init_qp_attr.cap.max_recv_wr = WORK_QUEUE_SIZE;
-	init_qp_attr.cap.max_send_sge = WORK_QUEUE_SIZE;
-	init_qp_attr.cap.max_recv_sge = WORK_QUEUE_SIZE;
-	init_qp_attr.sq_sig_all = 1;
-	init_qp_attr.qp_type = IBV_QPT_RC;
-	init_qp_attr.send_cq = cm_ctx->cq;
-	init_qp_attr.recv_cq = cm_ctx->cq;
+    init_qp_attr.cap.max_send_wr = WORK_QUEUE_SIZE;
+    init_qp_attr.cap.max_recv_wr = WORK_QUEUE_SIZE;
+    init_qp_attr.cap.max_send_sge = WORK_QUEUE_SIZE;
+    init_qp_attr.cap.max_recv_sge = WORK_QUEUE_SIZE;
+    init_qp_attr.sq_sig_all = 1;
+    init_qp_attr.qp_type = IBV_QPT_RC;
+    init_qp_attr.send_cq = cm_ctx->cq;
+    init_qp_attr.recv_cq = cm_ctx->cq;
 
     if (0 != rdma_create_qp(id, cm_ctx->pd, &init_qp_attr)) {
         perror("rdma_create_qp()");
