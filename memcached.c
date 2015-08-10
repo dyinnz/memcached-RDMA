@@ -92,6 +92,11 @@ struct cm_context {
     struct ibv_mr               *recv_mr;
 
     char                        recv_buff[RDMA_RECV_BUFF];
+
+    /* statistics */
+    int                         total_cqe;
+    int                         total_recv_msg;
+    int                         total_post_recv;
 };
 
 
@@ -5993,8 +5998,9 @@ static int attach_rdma_listen_event() {
  * 
  ******************************************************************************/
 static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
-    struct rdma_cm_event        *cm_event = NULL;
-    struct rdma_cm_id           *id = NULL;
+    struct rdma_cm_event    *cm_event = NULL;
+    struct rdma_cm_id       *id = NULL;
+    struct cm_context       *cm_ctx = NULL;
 
     if (0 != rdma_get_cm_event(rdma_context.cm_channel, &cm_event)) {
         perror("rdma_get_cm_event()");
@@ -6002,6 +6008,7 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
     }
     printf("RDMA CM event: %s\n", rdma_event_str(cm_event->event));
     id = cm_event->id;
+    cm_ctx = id->context;
 
     switch (cm_event->event) {
         case RDMA_CM_EVENT_CONNECT_REQUEST:
@@ -6012,6 +6019,9 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
             break;
 
         case RDMA_CM_EVENT_DISCONNECTED:
+            printf("In this connection: total recv msg: %d, total post recv: %d, total cqe %d\n",
+                    cm_ctx->total_recv_msg, cm_ctx->total_post_recv, cm_ctx->total_cqe);
+
             rdma_ack_cm_event(cm_event);
             rdma_release_conn(id);
             return;     /* return early due to ack cm event */
@@ -6063,7 +6073,7 @@ static int handle_connect_request(struct rdma_cm_id *id) {
         perror("rdma_accept()");
         return -1;
     }
-    printf("Accept new connection.");
+    printf("Accept new connection.\n");
 
     if ( !(cm_ctx->recv_mr = rdma_reg_msgs(id, cm_ctx->recv_buff, RDMA_RECV_BUFF)) ) {
         perror("rdma_reg_msg()");
@@ -6076,6 +6086,7 @@ static int handle_connect_request(struct rdma_cm_id *id) {
         rdma_disconnect(id);
         return -1;
     }
+    cm_ctx->total_post_recv += 1;
 
     if (0 != establish_connection_poll(main_base, cm_ctx)) {
         printf("establish_connection_poll failed!");
@@ -6174,16 +6185,17 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
         ack_events = 0;
     }
 
-    printf("get a cq event, sleep 3 secs\n");
-    sleep(3);
-
     cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
     if (cqe <= 0) {
         perror("ibv_poll_cq()");
         return;
     }
 
-    printf("Get cqe: %d\n", cqe);
+    /* printf("Get cqe: %d\n", cqe); */
+    cm_ctx->total_cqe += cqe;
+    if (cqe > 1) {
+        printf("Get more than one cqe: %d\n", cqe);
+    }
 
     for (i = 0; i < cqe; ++i) {
         handle_work_complete(&wc[i]);
@@ -6207,22 +6219,19 @@ static void handle_work_complete(struct ibv_wc *wc) {
         return;
     }
 
-    static int post_recv = 1;
-    static int recv_number = 0;
-
     /* Test whether this completion is a recive */ 
     if (wc->opcode & IBV_WC_RECV) {
+        cm_ctx->total_recv_msg += 1;
         if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->recv_buff, RDMA_RECV_BUFF, cm_ctx->recv_mr)) {
             perror("rdma_post_recv()");
             rdma_disconnect(cm_ctx->id);
             return;
         }
-        ++post_recv;
-        ++recv_number;
-        //if (recv_number % 100 == 0) {
-            printf("[SERVER has received %d:]\n%s\n", recv_number, (char*)cm_ctx->recv_mr->addr);
-            printf("Post recv: %d\n", post_recv);
-        //}
+        cm_ctx->total_post_recv += 1;
+        if (cm_ctx->total_recv_msg % 100 == 0) {
+            printf("[total recv_msg %d, total post recv %d]\n%s\n", 
+                    cm_ctx->total_recv_msg, cm_ctx->total_post_recv, (char*)cm_ctx->recv_mr->addr);
+        }
         return;
     }
 

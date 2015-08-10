@@ -184,6 +184,8 @@ void *thread_run(void *arg) {
     }
 
     for (i = 0; i < request_number; ++i) {
+        sprintf(send_buff, "message %d\n", i);
+
         if (0 != send_msg(cm_conn, send_buff, SEND_BUFF_SIZE)) {
             printf("send_msg() error!\n");
             break;
