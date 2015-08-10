@@ -6053,13 +6053,7 @@ static int handle_connect_request(struct rdma_cm_id *id) {
     }
     printf("Accept new connection.\n");
 
-
-    // TODO: rdma_new_conn
-    if (0) {
-        printf("establish_connection_poll failed!");
-        rdma_disconnect(id);
-        return -1;
-    }
+    dispatch_rdma_conn(cm_ctx);
 
     return 0;
 }
@@ -6216,19 +6210,16 @@ init_rdma_new_conn(struct cm_context *cm_ctx, enum conn_states init_state,
 
     if (cm_ctx->rbuf == 0 || cm_ctx->wbuf == 0) {
         printf("Failed to allocate buffers for connection\n");
-        rdma_disconnect(cm_ctx->id);
         return -1;
     }
 
     if ( !(cm_ctx->recv_mr = rdma_reg_msgs(cm_ctx->id, cm_ctx->rbuf, read_buffer_size)) ) {
         perror("rdma_reg_msg()");
-        rdma_disconnect(cm_ctx->id);
         return -1;
     }
 
     if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->rbuf, read_buffer_size, cm_ctx->recv_mr)) {
         perror("rdma_post_recv()");
-        rdma_disconnect(cm_ctx->id);
         return -1;
     }
 
