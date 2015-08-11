@@ -17,9 +17,6 @@
 
 #define ITEMS_PER_ALLOC 64
 
-#include <rdma/rdma_cma.h>
-#include <rdma/rdma_verbs.h>
-
 struct cm_context;
 
 /* An item in the connection queue. */
@@ -406,7 +403,7 @@ static void thread_libevent_process(int fd, short which, void *arg) {
         if (NULL != item) {
             if (0 != init_rdma_new_conn(item->cm_ctx, item->init_state,
                     item->read_buffer_size, me->base)) {
-                perror("init_rdma_new_conn():");
+                perror("init_rdma_new_conn()");
                 rdma_disconnect(item->cm_ctx->id);
 
             } else {
