@@ -87,6 +87,8 @@ static int preamble_qp(struct ibv_context *device_context, struct cm_context *cm
 static void rdma_release_conn(struct rdma_cm_id *id);
 static void cc_poll_event_handler(int fd, short libevent_event, void *arg);
 static void handle_work_complete(struct ibv_wc *wc);
+static void rdma_conn_set_state(struct cm_context *cm_ctx, enum conn_states state);
+
 int init_rdma_new_conn(struct cm_context *cm_ctx, enum conn_states init_state,
                    const int read_buffer_size, struct event_base *base);
  
@@ -5744,7 +5746,7 @@ int main (int argc, char **argv) {
 #endif
 
     if (0 !=init_rdma_resources()) {
-        printf("init_rdma_resources ok!\n");
+        printf("init_rdma_resources failed!\n");
         return -1;
     }
 
@@ -6125,10 +6127,9 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
         return;
     }
     
-    static int ack_events = 0;
-    if (++ack_events == 8) {
+    if (++(cm_ctx->ack_events) == 8) {
         ibv_ack_cq_events(cq, 8);
-        ack_events = 0;
+        cm_ctx->ack_events = 0;
     }
 
     cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
@@ -6139,7 +6140,7 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
 
     /* printf("Get cqe: %d\n", cqe); */
     cm_ctx->total_cqe += cqe;
-    if (cqe > 1) {
+    if (settings.verbose > 1 && cqe > 1) {
         printf("Get more than one cqe: %d\n", cqe);
     }
 
@@ -6194,7 +6195,6 @@ static void handle_work_complete(struct ibv_wc *wc) {
 
 }
 
-
 /***************************************************************************//**
  * init other connection resources
  *
@@ -6237,4 +6237,99 @@ init_rdma_new_conn(struct cm_context *cm_ctx, enum conn_states init_state,
     return 0;
 }
 
+/***************************************************************************//**
+ * Set the connection state
+ ******************************************************************************/
+static void 
+rdma_conn_set_state(struct cm_context *cm_ctx, enum conn_states state) {
+    if (state != cm_ctx->state) {
+        if (settings.verbose > 2) {
+            fprintf(stderr, "%p: going from %s to %s\n",
+                    (void*)cm_ctx, state_text(cm_ctx->state), state_text(state));
+        }
+        cm_ctx->state = state;
+    }
+}
 
+/***************************************************************************//**
+ * RDAM drive machine
+ ******************************************************************************/
+static void
+rdma_drive_machine(struct ibv_wc *wc) {
+    struct cm_context   *cm_ctx = (struct cm_context*)wc->wr_id;
+
+    int     nreqs = settings.reqs_per_event;
+    bool    stop = false; 
+
+    while (!stop) {
+        switch (cm_ctx->state) {
+
+        case conn_waiting:
+            if (IBV_WC_SUCCESS != wc->status) {
+                rdma_conn_set_state(cm_ctx, conn_closing);
+                if (settings.verbose > 0) {
+                    printf("id[%p] recv bad wc!", (void*)cm_ctx->id);
+                } 
+                break;
+            } 
+            if (IBV_WC_SUCCESS & IBV_WC_RECV) {
+                rdma_conn_set_state(cm_ctx, conn_read);
+                break;
+            }
+
+            /* RDMA TODO: handle these event */
+            switch (wc->opcode) {
+                case IBV_WC_SEND:
+                    break;
+                case IBV_WC_RDMA_WRITE:
+                    break;
+                case IBV_WC_RDMA_READ:
+                    break;
+                default:
+                    break;
+            }
+
+            break;
+
+        case conn_read:
+            cm_ctx->total_recv_msg += 1;
+
+            if (settings.verbose > 1 && cm_ctx->total_recv_msg % 100 == 0) {
+                printf("[total recv_msg %d, total post recv %d]\n%s\n", 
+                        cm_ctx->total_recv_msg, cm_ctx->total_post_recv, (char*)cm_ctx->recv_mr->addr);
+            }
+
+            /* post a recv again to recv new message */
+            if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->rbuf, cm_ctx->rsize, cm_ctx->recv_mr)) {
+                rdma_conn_set_state(cm_ctx, conn_closing);
+                if (settings.verbose > 0) {
+                    perror("rdma_post_recv()");
+                }
+                break;
+            }
+            cm_ctx->total_post_recv += 1;
+
+            break;
+
+        case conn_new_cmd:
+            rdma_conn_set_state(cm_ctx, conn_waiting);
+            break;
+
+            /* TODO: avoid starving other connection
+            nreqs--;
+            if (nreqs >= 0) {
+
+            } else {
+
+            }
+            */
+        case conn_closing:
+            rdma_disconnect(cm_ctx->id);
+            break;
+
+        default:
+            assert(0);
+            break;
+        }
+    }
+}

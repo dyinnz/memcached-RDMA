@@ -624,6 +624,7 @@ struct cm_context {
 
     /* shared */
     struct ibv_comp_channel     *comp_channel;
+    int                         ack_events;
     struct ibv_pd               *pd;
     struct ibv_cq               *cq;
     struct event                poll_event;

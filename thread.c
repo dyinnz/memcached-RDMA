@@ -845,6 +845,12 @@ dispatch_rdma_conn(struct cm_context *cm_ctx) {
 
     last_thread = tid;
 
+    /* The four members are constant */
+    item->init_state = conn_new_cmd;
+    item->event_flags = EV_READ | EV_PERSIST;
+    item->read_buffer_size = DATA_BUFFER_SIZE;
+    item->transport = tcp_transport;
+
     item->cm_ctx = cm_ctx;
 
     cq_push(thread->new_conn_queue, item);
