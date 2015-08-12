@@ -646,56 +646,8 @@ extern void drop_privileges(void);
  * RDMA Part
  *
  ******************************************************************************/
-struct cm_context {
-    /* given */
-    struct rdma_cm_id           *id;
 
-    /* shared */
-    struct ibv_comp_channel     *comp_channel;
-
-    struct ibv_pd               *pd;
-    struct ibv_cq               *cq;
-
-    LIBEVENT_THREAD             *thread;
-    struct event                poll_event;
-
-    /* unique */
-    enum conn_states            state;
-
-    struct ibv_mr               *send_mr;
-    struct ibv_mr               *recv_mr;
-
-    char                        *rbuf;
-    char                        *wbuf;
-
-    int                         rsize;
-    int                         wsize;
-
-    char                        *rcurr;
-    int                         rbytes;
-
-    char                        *ritem;
-
-    char                        *item; 
-    enum protocol               protocol;
-
-    bool                        noreply;
-
-    struct {
-        char    *bufer;
-        size_t  size;
-        size_t  offset;
-    } stats;
-
-    rel_time_t                  last_cmd_time;
-
-    /* statistics */
-    int                         total_cqe;
-    int                         total_recv_msg;
-    int                         total_post_recv;
-};
-
-void dispatch_rdma_conn(struct cm_context *cm_ctx);
-int init_rdma_new_conn(struct cm_context *cm_ctx, enum conn_states init_state,
+void dispatch_rdma_conn(conn *cm_ctx);
+int init_rdma_new_conn(conn *cm_ctx, enum conn_states init_state,
                    const int read_buffer_size, struct event_base *base);
 

@@ -17,12 +17,12 @@
 
 #define ITEMS_PER_ALLOC 64
 
-struct cm_context;
+struct conn;
 
 /* An item in the connection queue. */
 typedef struct conn_queue_item CQ_ITEM;
 struct conn_queue_item {
-    struct cm_context *cm_ctx;
+    conn *cm_ctx;
     int               sfd;
     enum conn_states  init_state;
     int               event_flags;
@@ -826,7 +826,7 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
  *
  ******************************************************************************/
 void
-dispatch_rdma_conn(struct cm_context *cm_ctx) {
+dispatch_rdma_conn(conn *cm_ctx) {
     CQ_ITEM *item = cqi_new();
     char buf[1];
     if (item == NULL) {
@@ -843,6 +843,7 @@ dispatch_rdma_conn(struct cm_context *cm_ctx) {
     last_thread = tid;
 
     /* The four members are constant */
+    item->sfd = 0;  /* do not use */
     item->init_state = conn_new_cmd;
     item->event_flags = EV_READ | EV_PERSIST;
     item->read_buffer_size = DATA_BUFFER_SIZE;
