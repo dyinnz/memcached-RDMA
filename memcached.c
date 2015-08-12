@@ -85,6 +85,8 @@ static void rdma_release_conn(struct rdma_cm_id *id);
 static void cc_poll_event_handler(int fd, short libevent_event, void *arg);
 static void rdma_conn_set_state(struct cm_context *cm_ctx, enum conn_states state);
 static void rdma_drive_machine(struct ibv_wc *wc);
+static int resize_recv_buff(struct cm_context *cm_ctx);
+static int rdma_read_command(struct cm_context *cm_ctx);
  
 /*
  * forward declarations
@@ -6048,7 +6050,7 @@ static int handle_connect_request(struct rdma_cm_id *id) {
     }
     printf("Accept new connection [%p].\n", (void*)id);
 
-    if (1 == settings.num_threads) {
+    if (1 != settings.num_threads) {
         dispatch_rdma_conn(cm_ctx);
 
     } else {
@@ -6179,6 +6181,7 @@ init_rdma_new_conn(struct cm_context *cm_ctx, enum conn_states init_state,
     cm_ctx->wsize = DATA_BUFFER_SIZE;
 
     cm_ctx->rbuf = malloc((size_t)cm_ctx->rsize);
+    cm_ctx->rcurr = cm_ctx->rbuf;
     cm_ctx->wbuf = malloc((size_t)cm_ctx->wsize);
 
     if (cm_ctx->rbuf == 0 || cm_ctx->wbuf == 0) {
@@ -6243,14 +6246,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
         switch (cm_ctx->state) {
 
         case conn_waiting:
-            if (IBV_WC_SUCCESS != wc->status) {
-                rdma_conn_set_state(cm_ctx, conn_closing);
-                if (settings.verbose > 0) {
-                    printf("id[%p] recv bad wc!", (void*)cm_ctx->id);
-                } 
-                break;
-            } 
-            if (IBV_WC_SUCCESS & IBV_WC_RECV) {
+            if (IBV_WC_RECV & wc->opcode) {
                 rdma_conn_set_state(cm_ctx, conn_read);
                 break;
             }
@@ -6270,23 +6266,44 @@ rdma_drive_machine(struct ibv_wc *wc) {
             break;
 
         case conn_read:
-            cm_ctx->total_recv_msg += 1;
+            if (IBV_WC_LOC_LEN_ERR) {
+                if (0 != resize_recv_buff(cm_ctx)) {
+                    rdma_conn_set_state(cm_ctx, conn_closing);
+                    break;
+                } else {
+                    rdma_conn_set_state(cm_ctx, conn_waiting);
+                    stop = true;
+                }
 
-            if (settings.verbose > 1 && cm_ctx->total_recv_msg % 100 == 0) {
-                printf("[total recv_msg %d, total post recv %d]\n%s\n", 
-                        cm_ctx->total_recv_msg, cm_ctx->total_post_recv, (char*)cm_ctx->recv_mr->addr);
+            } else if (IBV_WC_SUCCESS != wc->status) {
+                if (settings.verbose > 0) {
+                    printf("id[%p] recv bad wc! status [%d]", (void*)cm_ctx->id, wc->status);
+                } 
+                rdma_conn_set_state(cm_ctx, conn_closing);
+                break;
+            } else {
+                cm_ctx->rbytes = wc->byte_len;
+                cm_ctx->total_recv_msg += 1;
+                if ((settings.verbose > 1 && cm_ctx->total_recv_msg % 100 == 0) || settings.verbose > 2) {
+                    printf("[total recv_msg %d, total post recv %d]\n%s\n", 
+                            cm_ctx->total_recv_msg, cm_ctx->total_post_recv, (char*)cm_ctx->recv_mr->addr);
+                }
+
+                rdma_conn_set_state(cm_ctx, conn_parse_cmd);
+                break;
             }
-
+            
             /* post a recv again to recv new message */
             if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->rbuf, cm_ctx->rsize, cm_ctx->recv_mr)) {
-                rdma_conn_set_state(cm_ctx, conn_closing);
                 if (settings.verbose > 0) {
                     perror("rdma_post_recv()");
                 }
+                rdma_conn_set_state(cm_ctx, conn_closing);
                 break;
             }
             cm_ctx->total_post_recv += 1;
 
+            stop = true;
             break;
 
         case conn_new_cmd:
@@ -6304,9 +6321,107 @@ rdma_drive_machine(struct ibv_wc *wc) {
             rdma_disconnect(cm_ctx->id);
             break;
 
+        case conn_parse_cmd:
+            rdma_read_command(cm_ctx);
+            break;
+
         default:
             assert(0);
             break;
         }
     }
 }
+
+/***************************************************************************//**
+ * Resize recv buff, factor = 2
+ *
+ ******************************************************************************/
+static int 
+resize_recv_buff(struct cm_context *cm_ctx) {
+    if (0 != rdma_dereg_mr(cm_ctx->send_mr)) {
+        perror("rdma_dereg_mr()");
+        return -1;
+    }
+
+    char *new_rbuf = realloc(cm_ctx->rbuf, cm_ctx->rsize * 2);
+    if (!new_rbuf) {
+        perror("realloc(), out of memory");
+        return -1;
+    }
+    cm_ctx->rcurr = cm_ctx->rbuf = new_rbuf;
+    cm_ctx->rsize *= 2;
+
+    if ( !(cm_ctx->recv_mr = rdma_reg_msgs(cm_ctx->id, cm_ctx->rbuf, cm_ctx->rsize)) ) {
+        perror("rdma_reg_msgs()");
+        return -1;
+    }
+
+    if (0 != rdma_post_recv(cm_ctx->id, cm_ctx, cm_ctx->rbuf, cm_ctx->rsize, cm_ctx->recv_mr)) {
+        perror("rdma_post_recv()");
+        return -1;
+    }
+
+    return 0;
+}
+
+/***************************************************************************//**
+ * Read command for RDMA connection
+ ******************************************************************************/
+static int rdma_read_command(struct cm_context *cm_ctx) {
+    if (cm_ctx->protocol == negotiating_prot) {
+        if ((unsigned char)cm_ctx->rbuf[0] == (unsigned char)PROTOCOL_BINARY_REQ) {
+            cm_ctx->protocol = binary_prot;
+        } else {
+            cm_ctx->protocol = ascii_prot;
+        }
+        if (settings.verbose > 1) {
+            fprintf(stderr, "%p: cm_ctxlient using the %s protocol\n", (void*)cm_ctx->id,
+                    prot_text(cm_ctx->protocol));
+        }
+    }
+
+    if (cm_ctx->protocol == binary_prot) {
+        /* not implemented */
+    } else {
+        char *el, *cont;
+
+        el = memchr(cm_ctx->rbuf, '\n', cm_ctx->rsize);
+        if (!el) {
+            /* RDMA TODO: what is this ??? couldn't understand !!! */
+            if (cm_ctx->rsize > 1024) {
+
+                char *ptr = cm_ctx->rbuf;
+                while (*ptr == ' ') {
+                    ++ptr;
+                }
+
+                if (ptr - cm_ctx->rbuf > 100 || (strncmp(ptr, "get ", 4) && strncmp(ptr, "gets ", 5))) {
+                    rdma_conn_set_state(cm_ctx, conn_closing);
+                    return 1;
+                }
+            }
+
+            return 0;
+        }
+
+        cont = el + 1;
+        if ((el - cm_ctx->rcurr) > 1 && *(el - 1) == '\r') {
+            el--;
+        }
+        *el = '\0';
+    
+        assert(cont <= (cm_ctx->rcurr + cm_ctx->rbytes));
+        cm_ctx->last_cmd_time = current_time;
+        // RDMA TODO
+        
+        cm_ctx->rbytes -= (cont - cm_ctx->rcurr);
+        cm_ctx->rcurr = cont;
+
+        assert(cm_ctx->rcurr <= (cm_ctx->rbuf + cm_ctx->rsize));
+    }
+
+    return -1;
+}
+
+
+
