@@ -417,7 +417,6 @@ typedef struct {
     struct ibv_pd               *pd;
     struct ibv_cq               *cq;
     struct ibv_srq              *srq;
->>>>>>> dy-dev
 } LIBEVENT_THREAD;
 
 typedef struct {
