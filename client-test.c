@@ -399,6 +399,7 @@ main(int argc, char *argv[]) {
                 break;
             case 'v':
                 verbose = 1;
+                break;
             default:
                 assert(0);
         }
@@ -411,6 +412,7 @@ main(int argc, char *argv[]) {
     if (1 == thread_number) {
         /* thread_run(NULL); */
         /* test_command_noreply(NULL); */
+        test_command(NULL);
 
     } else {
         for (i = 0; i < thread_number; ++i) {
