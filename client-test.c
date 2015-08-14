@@ -1,6 +1,8 @@
 /***************************************************************************//**
  * Author:  Dyinnz
- * Date  :  2015-08-08 * Email :  ml_143@sina.com
+ * Group :  HUST Uniquestudio
+ * Date  :  2015-08-08 
+ * Email :  ml_143@sina.com
  * Description: 
  *   a simple benchmark for memcached using RDMA
  ******************************************************************************/
@@ -23,12 +25,25 @@
  * Testing parameters
  *
  ******************************************************************************/
-static char     *str_server = "127.0.0.1";
-static char     *str_port = "11211";
+static char     *pstr_server = "127.0.0.1";
+static char     *pstr_port = "11211";
 static int      thread_number = 1;
 static int      request_number = 10000;
 static int      last_time = 1000;    /* secs */
 static int      is_recv = 0;
+
+/***************************************************************************//**
+ * Testing message
+ *
+ ******************************************************************************/
+static char str_add[] = "add foo 0 0 1 noreply\r\n1\r\n";
+static char str_set[] = "set foo 0 0 1 noreply\r\n1\r\n";
+static char str_replace[] = "replace foo 0 0 1 noreply\r\n1\r\n";
+static char str_append[] = "append foo 0 0 1 noreply\r\n1\r\n";
+static char str_prepend[] = "prepend foo 0 0 1 noreply\r\n1\r\n";
+static char str_incr[] = "incr foo 1 noreply\r\n";
+static char str_decr[] = "decr foo 1 noreply\r\n";
+static char str_delete[] = "delete foo noreply\r\n";
 
 /***************************************************************************//**
  * Relative resources around connection
@@ -66,7 +81,7 @@ build_connection() {
 
     int     ret = 0;
 
-    if (0 != rdma_getaddrinfo(str_server, str_port, &hints, &res)) {
+    if (0 != rdma_getaddrinfo(pstr_server, pstr_port, &hints, &res)) {
         perror("rdma_getaddrinfo():");
         return NULL;
     }
@@ -238,6 +253,36 @@ void *thread_run(void *arg) {
 }
 
 /***************************************************************************//**
+ * Testing command
+ ******************************************************************************/
+void *test_command_noreply(void *arg) {
+    struct cm_connection    *cm_conn = NULL;
+
+    int ret = 0;
+
+    if ( !(cm_conn = build_connection())) {
+        return NULL;
+    }
+
+    ret |= send_msg(cm_conn, str_add, sizeof(str_add));
+    ret |= send_msg(cm_conn, str_set, sizeof(str_set));
+    ret |= send_msg(cm_conn, str_replace, sizeof(str_replace));
+    ret |= send_msg(cm_conn, str_append, sizeof(str_append));
+    ret |= send_msg(cm_conn, str_prepend, sizeof(str_prepend));
+    ret |= send_msg(cm_conn, str_incr, sizeof(str_incr));
+    ret |= send_msg(cm_conn, str_decr, sizeof(str_decr));
+    ret |= send_msg(cm_conn, str_delete, sizeof(str_delete));
+
+    if (ret) {
+        printf("Send message Erorr!\n");
+    }
+
+    disconnect(cm_conn);
+
+    return NULL;
+}
+
+/***************************************************************************//**
  * main
  *
  ******************************************************************************/
@@ -268,10 +313,10 @@ main(int argc, char *argv[]) {
                 last_time = atoi(optarg);
                 break;
             case 'p':
-                str_port = optarg;
+                pstr_port = optarg;
                 break;
             case 's':
-                str_server = optarg;
+                pstr_server = optarg;
                 break;
             default:
                 assert(0);
@@ -283,7 +328,8 @@ main(int argc, char *argv[]) {
     clock_gettime(CLOCK_REALTIME, &start);
 
     if (1 == thread_number) {
-        thread_run(NULL);
+        /* thread_run(NULL); */
+        test_command_noreply(NULL);
 
     } else {
         for (i = 0; i < thread_number; ++i) {

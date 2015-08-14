@@ -17,9 +17,12 @@
 
 #define ITEMS_PER_ALLOC 64
 
+struct conn;
+
 /* An item in the connection queue. */
 typedef struct conn_queue_item CQ_ITEM;
 struct conn_queue_item {
+    conn *cm_ctx;
     int               sfd;
     enum conn_states  init_state;
     int               event_flags;
@@ -396,6 +399,21 @@ static void thread_libevent_process(int fd, short which, void *arg) {
 
     switch (buf[0]) {
     case 'c':
+        item = cq_pop(me->new_conn_queue);
+        if (NULL != item) {
+            if (0 != init_rdma_new_conn(item->cm_ctx, item->init_state,
+                    item->read_buffer_size, me->base)) {
+                perror("init_rdma_new_conn()");
+                rdma_disconnect(item->cm_ctx->id);
+
+            } else {
+                item->cm_ctx->thread = me;
+            }
+            cqi_free(item);
+        }
+        break;
+
+    /*
     item = cq_pop(me->new_conn_queue);
 
     if (NULL != item) {
@@ -418,6 +436,7 @@ static void thread_libevent_process(int fd, short which, void *arg) {
         cqi_free(item);
     }
         break;
+    */
     /* we were told to pause and report in */
     case 'p':
     register_thread_initialized();
@@ -802,3 +821,41 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
     pthread_mutex_unlock(&init_lock);
 }
 
+/***************************************************************************//**
+ * Dispatch a new rdma connection to another thread.
+ *
+ ******************************************************************************/
+void
+dispatch_rdma_conn(conn *cm_ctx) {
+    CQ_ITEM *item = cqi_new();
+    char buf[1];
+    if (item == NULL) {
+        rdma_disconnect(cm_ctx->id);
+        /* given that malloc failed this may also fail, but let's try */
+        fprintf(stderr, "Failed to allocate memory for connection object\n");
+        return ;
+    }
+
+    int tid = (last_thread + 1) % settings.num_threads;
+
+    LIBEVENT_THREAD *thread = threads + tid;
+
+    last_thread = tid;
+
+    /* The four members are constant */
+    item->sfd = 0;  /* do not use */
+    item->init_state = conn_new_cmd;
+    item->event_flags = EV_READ | EV_PERSIST;
+    item->read_buffer_size = DATA_BUFFER_SIZE;
+    item->transport = tcp_transport;
+
+    item->cm_ctx = cm_ctx;
+
+    cq_push(thread->new_conn_queue, item);
+
+    MEMCACHED_CONN_DISPATCH(sfd, thread->thread_id);
+    buf[0] = 'c';
+    if (write(thread->notify_send_fd, buf, 1) != 1) {
+        perror("Writing to thread notify pipe");
+    }
+}
