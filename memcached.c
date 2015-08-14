@@ -84,9 +84,9 @@ static int handle_connect_request(struct rdma_cm_id *id);
 static int preamble_qp(struct ibv_context *device_context, conn *c);
 static void rdma_release_conn(struct rdma_cm_id *id);
 static void cc_poll_event_handler(int fd, short libevent_event, void *arg);
-static void rdma_conn_set_state(conn *c, enum conn_states state);
 static void rdma_drive_machine(struct ibv_wc *wc);
 static int resize_recv_buff(conn *c);
+static int rdma_add_sge(conn *c, const void *buf, int len);
  
 /*
  * forward declarations
@@ -710,9 +710,12 @@ static void conn_set_state(conn *c, enum conn_states state) {
 
     if (state != c->state) {
         if (settings.verbose > 2) {
-            fprintf(stderr, "%d: going from %s to %s\n",
+            /* fprintf(stderr, "%d: going from %s to %s\n", 
                     c->sfd, state_text(c->state),
                     state_text(state));
+            */
+            fprintf(stderr, "%p: going from %s to %s\n",
+                    (void*)c->id, state_text(c->state), state_text(state));
         }
 
         if (state == conn_write || state == conn_mwrite) {
@@ -754,6 +757,31 @@ static int ensure_iov_space(conn *c) {
     return 0;
 }
 
+/***************************************************************************//**
+ * RDMA Part: adds data to the sge that will be posted to the connection
+ *
+ ******************************************************************************/
+static int 
+rdma_add_sge(conn *c, const void *buf, int len) {
+    assert(c->sge_used < IOV_MAX);
+
+    c->sge[c->sge_used].addr = (uint64_t)buf;
+    c->sge[c->sge_used].length = len;
+    if (c->wbuf == buf) {
+        c->sge[c->sge_used].lkey = c->send_mr->lkey; /* RDMA TODO 1 */
+
+    } else {
+        struct ibv_mr *mr = rdma_reg_msgs(c->id, (void*)buf, len);
+        if (!mr) {
+            return -1;
+        }
+        c->mr_list[c->mr_used] = mr;
+        c->mr_used += 1;
+    }
+
+    c->sge_used += 1;
+    return 0;
+}
 
 /*
  * Adds data to the list of pending data that will be written out to a
@@ -763,6 +791,9 @@ static int ensure_iov_space(conn *c) {
  */
 
 static int add_iov(conn *c, const void *buf, int len) {
+    /* Hook! */
+    return rdma_add_sge(c, buf, len);
+    
     struct msghdr *m;
     int leftover;
     bool limit_to_mtu;
@@ -6102,13 +6133,33 @@ static int preamble_qp(struct ibv_context *device_context, conn *c) {
  *
  ******************************************************************************/
 static void rdma_release_conn(struct rdma_cm_id *id) {
-    conn     *c = id->context;
+    conn    *c = id->context;
+    int     i = 0; 
 
     if (c->recv_mr) rdma_dereg_mr(c->recv_mr);
-    if (c->rbuf) free(c->rbuf);
+    if (c->rbuf) {
+        free(c->rbuf);
+        c->rbuf = NULL;
+    }
 
     if (c->send_mr) rdma_dereg_mr(c->send_mr);
-    if (c->wbuf) free(c->wbuf);
+    if (c->wbuf) {
+        free(c->wbuf);
+        c->wbuf = NULL;
+    }
+    
+    if (c->sge) {
+        free(c->sge);
+        c->sge = NULL;
+    }
+
+    if (c->mr_list) {
+        for (i = 0; i < c->mr_used; ++i) {
+            rdma_dereg_mr(c->mr_list[i]);
+            c->mr_used = 0;
+        }
+        c->mr_list = 0;
+    }
 
     free(c);
 
@@ -6191,12 +6242,21 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->msgsize = MSG_LIST_INITIAL;
     c->hdrsize = 0;
 
+    /* RDMA PART */
+    c->sge_size = IOV_LIST_INITIAL;
+
     c->rbuf = (char *)malloc((size_t)c->rsize);
     c->wbuf = (char *)malloc((size_t)c->wsize);
     c->ilist = (item **)malloc(sizeof(item *) * c->isize);
     c->suffixlist = (char **)malloc(sizeof(char *) * c->suffixsize);
+
+    c->sge = malloc(sizeof(struct ibv_sge) * c->sge_size);
+    c->mr_list = malloc(sizeof(struct ibv_mr*) * c->sge_size);
+
+    /* the two members are used for sending message */
     c->iov = (struct iovec *)malloc(sizeof(struct iovec) * c->iovsize);
     c->msglist = (struct msghdr *)malloc(sizeof(struct msghdr) * c->msgsize);
+
 
     if (c->rbuf == 0 || c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
             c->msglist == 0 || c->suffixlist == 0) {
@@ -6226,6 +6286,10 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->msgcurr = 0;
     c->msgused = 0;
     c->authenticated = false;
+
+    /* RDMA PART */
+    c->sge_used = 0;
+    c->mr_used = 0;
 
     c->write_and_go = init_state;
     c->write_and_free = 0;
@@ -6264,20 +6328,6 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
 }
 
 /***************************************************************************//**
- * Set the connection state
- ******************************************************************************/
-static void 
-rdma_conn_set_state(conn *c, enum conn_states state) {
-    if (state != c->state) {
-        if (settings.verbose > 2) {
-            fprintf(stderr, "%p: going from %s to %s\n",
-                    (void*)c, state_text(c->state), state_text(state));
-        }
-        c->state = state;
-    }
-}
-
-/***************************************************************************//**
  * RDAM drive machine
  ******************************************************************************/
 static void
@@ -6294,13 +6344,33 @@ rdma_drive_machine(struct ibv_wc *wc) {
 
         case conn_waiting:
             if (IBV_WC_RECV & wc->opcode) {
-                rdma_conn_set_state(c, conn_read);
+                conn_set_state(c, conn_read);
                 break;
             }
 
             /* RDMA TODO: handle these event */
             switch (wc->opcode) {
                 case IBV_WC_SEND:
+                    if (c->write_state == conn_mwrite) {
+                        conn_release_items(c);
+                        if(c->protocol == binary_prot) {
+                            conn_set_state(c, c->write_and_go);
+                        } else {
+                            conn_set_state(c, conn_new_cmd);
+                        }
+                    } else if (c->write_state == conn_write) {
+                        if (c->write_and_free) {
+                            free(c->write_and_free);
+                            c->write_and_free = 0;
+                        }
+                        conn_set_state(c, c->write_and_go);
+                    } else {
+                        if (settings.verbose > 0)
+                            fprintf(stderr, "Unexpected state %d\n", c->state);
+                        conn_set_state(c, conn_closing);
+                    }
+                    printf("post recv OK!\n");
+
                     break;
                 case IBV_WC_RDMA_WRITE:
                     break;
@@ -6315,10 +6385,10 @@ rdma_drive_machine(struct ibv_wc *wc) {
         case conn_read:
             if (IBV_WC_LOC_LEN_ERR == wc->status) {
                 if (0 != resize_recv_buff(c)) {
-                    rdma_conn_set_state(c, conn_closing);
+                    conn_set_state(c, conn_closing);
                     break;
                 } else {
-                    rdma_conn_set_state(c, conn_waiting);
+                    conn_set_state(c, conn_waiting);
                     stop = true;
                     break;
                 }
@@ -6327,7 +6397,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
                 if (settings.verbose > 0) {
                     printf("id[%p] recv bad wc! status [%d]", (void*)c->id, wc->status);
                 } 
-                rdma_conn_set_state(c, conn_closing);
+                conn_set_state(c, conn_closing);
                 break;
             } else {
                 c->rcurr = c->rbuf;
@@ -6339,7 +6409,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
                             c->total_recv_msg, c->total_post_recv, (char*)c->recv_mr->addr);
                 }
 
-                rdma_conn_set_state(c, conn_parse_cmd);
+                conn_set_state(c, conn_parse_cmd);
                 break;
             }
             
@@ -6354,7 +6424,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
                 if (settings.verbose > 2) {
                     printf("continue reading new command\n");
                 }
-                rdma_conn_set_state(c, conn_waiting);
+                conn_set_state(c, conn_waiting);
             } else {
                 if (settings.verbose > 2) {
                     printf("stop reading new command\n");
@@ -6394,6 +6464,28 @@ rdma_drive_machine(struct ibv_wc *wc) {
             }
             assert(0); /* can't go here */
 
+        case conn_write:
+            if (0 == c->sge_used) {
+                if (add_iov(c, c->wcurr, c->wbytes) != 0) {
+                    if (settings.verbose > 0)
+                        fprintf(stderr, "Couldn't build response\n");
+                    conn_set_state(c, conn_closing);
+                    break;
+                }
+            }
+
+            /* fall through... */
+
+        case conn_mwrite:
+            c->write_state = c->state;
+            if (0 != rdma_post_sendv(c->id, c, c->sge, c->sge_used, 0)) {
+                conn_set_state(c, conn_closing);
+            } else {
+                conn_set_state(c, conn_waiting);
+                stop = true;
+            }
+            break;
+
         case conn_closing:
             rdma_disconnect(c->id);
             stop = true;
@@ -6402,7 +6494,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
         case conn_parse_cmd:
             if (try_read_command(c) == 0) {
                 /* wee need more data! */
-                rdma_conn_set_state(c, conn_waiting);
+                conn_set_state(c, conn_waiting);
             }
 
             /* post a recv again to recv new message */
@@ -6410,7 +6502,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
                 if (settings.verbose > 0) {
                     perror("rdma_post_recv()");
                 }
-                rdma_conn_set_state(c, conn_closing);
+                conn_set_state(c, conn_closing);
                 break;
             }
             c->total_post_recv += 1;

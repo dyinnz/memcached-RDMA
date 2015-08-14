@@ -437,10 +437,26 @@ struct conn {
 
     struct ibv_pd               *pd;
     struct ibv_cq               *cq;
+    struct ibv_srq              *srq;
 
     /* unique */
     struct ibv_mr               *send_mr;
     struct ibv_mr               *recv_mr;
+
+    struct ibv_sge              *sge;
+    int                         sge_size;
+    int                         sge_used;
+
+    struct ibv_mr               **mr_list;
+    int                         mr_used;
+
+    enum conn_states            write_state;
+
+    /* RDMA TODO: do not use now
+    struct ibv_send_wr          *sendwr_list;
+    int                         sendwr_size;
+    int                         sendwr_used;
+    */
 
     /* statistics */
     int                         total_cqe;
