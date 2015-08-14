@@ -31,19 +31,29 @@ static int      thread_number = 1;
 static int      request_number = 10000;
 static int      last_time = 1000;    /* secs */
 static int      is_recv = 0;
+static int      verbose = 0;
 
 /***************************************************************************//**
  * Testing message
  *
  ******************************************************************************/
-static char str_add[] = "add foo 0 0 1 noreply\r\n1\r\n";
-static char str_set[] = "set foo 0 0 1 noreply\r\n1\r\n";
-static char str_replace[] = "replace foo 0 0 1 noreply\r\n1\r\n";
-static char str_append[] = "append foo 0 0 1 noreply\r\n1\r\n";
-static char str_prepend[] = "prepend foo 0 0 1 noreply\r\n1\r\n";
-static char str_incr[] = "incr foo 1 noreply\r\n";
-static char str_decr[] = "decr foo 1 noreply\r\n";
-static char str_delete[] = "delete foo noreply\r\n";
+static char add_noreply[] = "add foo 0 0 1 noreply\r\n1\r\n";
+static char set_noreply[] = "set foo 0 0 1 noreply\r\n1\r\n";
+static char replace_noreply[] = "replace foo 0 0 1 noreply\r\n1\r\n";
+static char append_noreply[] = "append foo 0 0 1 noreply\r\n1\r\n";
+static char prepend_noreply[] = "prepend foo 0 0 1 noreply\r\n1\r\n";
+static char incr_noreply[] = "incr foo 1 noreply\r\n";
+static char decr_noreply[] = "decr foo 1 noreply\r\n";
+static char delete_noreply[] = "delete foo noreply\r\n";
+
+static char add_reply[] = "add foo 0 0 1\r\n1\r\n";
+static char set_reply[] = "set foo 0 0 1\r\n1\r\n";
+static char replace_reply[] = "replace foo 0 0 1\r\n1\r\n";
+static char append_reply[] = "append foo 0 0 1\r\n1\r\n";
+static char prepend_reply[] = "prepend foo 0 0 1\r\n1\r\n";
+static char incr_reply[] = "incr foo 1\r\n";
+static char decr_reply[] = "decr foo 1\r\n";
+static char delete_reply[] = "delete foo\r\n";
 
 /***************************************************************************//**
  * Relative resources around connection
@@ -214,6 +224,10 @@ recv_msg(struct cm_connection *cm_conn) {
         return -1;
     }
 
+    if (verbose > 0) {
+        printf("[Recv message]: %s\n", cm_conn->recv_buff);
+    }
+
     return 0;
 }
 
@@ -255,7 +269,8 @@ void *thread_run(void *arg) {
 /***************************************************************************//**
  * Testing command
  ******************************************************************************/
-void *test_command_noreply(void *arg) {
+void *
+test_command_noreply(void *arg) {
     struct cm_connection    *cm_conn = NULL;
 
     int ret = 0;
@@ -264,20 +279,83 @@ void *test_command_noreply(void *arg) {
         return NULL;
     }
 
-    ret |= send_msg(cm_conn, str_add, sizeof(str_add));
-    ret |= send_msg(cm_conn, str_set, sizeof(str_set));
-    ret |= send_msg(cm_conn, str_replace, sizeof(str_replace));
-    ret |= send_msg(cm_conn, str_append, sizeof(str_append));
-    ret |= send_msg(cm_conn, str_prepend, sizeof(str_prepend));
-    ret |= send_msg(cm_conn, str_incr, sizeof(str_incr));
-    ret |= send_msg(cm_conn, str_decr, sizeof(str_decr));
-    ret |= send_msg(cm_conn, str_delete, sizeof(str_delete));
+    ret |= send_msg(cm_conn, add_noreply, sizeof(add_noreply));
+    ret |= send_msg(cm_conn, set_noreply, sizeof(set_noreply));
+    ret |= send_msg(cm_conn, replace_noreply, sizeof(replace_noreply));
+    ret |= send_msg(cm_conn, append_noreply, sizeof(append_noreply));
+    ret |= send_msg(cm_conn, prepend_noreply, sizeof(prepend_noreply));
+    ret |= send_msg(cm_conn, incr_noreply, sizeof(incr_noreply));
+    ret |= send_msg(cm_conn, decr_noreply, sizeof(decr_noreply));
+    ret |= send_msg(cm_conn, delete_noreply, sizeof(delete_noreply));
+
 
     if (ret) {
         printf("Send message Erorr!\n");
     }
 
     disconnect(cm_conn);
+
+    return NULL;
+}
+
+/***************************************************************************//**
+ * Testing command
+ *
+ ******************************************************************************/
+void *
+test_command(void *arg) {
+    struct cm_connection *cm_conn = NULL;
+    struct timespec start,
+                    finish;
+    int             ret = 0;
+    int             i = 0;
+
+    clock_gettime(CLOCK_REALTIME, &start);
+
+    if ( !(cm_conn = build_connection()) ) {
+        return NULL;
+    }
+
+    printf("noreply:\n");
+    for (i = 0; i < request_number; ++i) {
+        ret |= send_msg(cm_conn, add_noreply, sizeof(add_noreply));
+        ret |= send_msg(cm_conn, set_noreply, sizeof(set_noreply));
+        ret |= send_msg(cm_conn, replace_noreply, sizeof(replace_noreply));
+        ret |= send_msg(cm_conn, append_noreply, sizeof(append_noreply));
+        ret |= send_msg(cm_conn, prepend_noreply, sizeof(prepend_noreply));
+        ret |= send_msg(cm_conn, incr_noreply, sizeof(incr_noreply));
+        ret |= send_msg(cm_conn, decr_noreply, sizeof(decr_noreply));
+        ret |= send_msg(cm_conn, delete_noreply, sizeof(delete_noreply));
+    }
+
+    clock_gettime(CLOCK_REALTIME, &finish);
+    printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
+                (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
+
+
+    printf("\nreply:\n");
+    clock_gettime(CLOCK_REALTIME, &start);
+    for (i = 0; i < request_number; ++i) {
+        ret |= send_msg(cm_conn, add_reply, sizeof(add_reply));
+        ret |= recv_msg(cm_conn);
+        ret |= send_msg(cm_conn, set_reply, sizeof(set_reply));
+        ret |= recv_msg(cm_conn);
+        ret |= send_msg(cm_conn, replace_reply, sizeof(replace_reply));
+        ret |= recv_msg(cm_conn);
+        ret |= send_msg(cm_conn, append_reply, sizeof(append_reply));
+        ret |= recv_msg(cm_conn);
+        ret |= send_msg(cm_conn, prepend_reply, sizeof(prepend_reply));
+        ret |= recv_msg(cm_conn);
+        ret |= send_msg(cm_conn, incr_reply, sizeof(incr_reply));
+        ret |= recv_msg(cm_conn);
+        ret |= send_msg(cm_conn, decr_reply, sizeof(decr_reply));
+        ret |= recv_msg(cm_conn);
+        ret |= send_msg(cm_conn, delete_reply, sizeof(delete_reply));
+        ret |= recv_msg(cm_conn);
+    }
+    clock_gettime(CLOCK_REALTIME, &finish);
+    printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
+                (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
 
     return NULL;
 }
@@ -301,6 +379,7 @@ main(int argc, char *argv[]) {
             "p:"    /* listening port */
             "s:"    /* server ip */
             "R"     /* whether receive message from server */
+            "v"     /* verbose */
     ))) {
         switch (c) {
             case 'c':
@@ -318,6 +397,8 @@ main(int argc, char *argv[]) {
             case 's':
                 pstr_server = optarg;
                 break;
+            case 'v':
+                verbose = 1;
             default:
                 assert(0);
         }
@@ -329,7 +410,7 @@ main(int argc, char *argv[]) {
 
     if (1 == thread_number) {
         /* thread_run(NULL); */
-        test_command_noreply(NULL);
+        /* test_command_noreply(NULL); */
 
     } else {
         for (i = 0; i < thread_number; ++i) {
