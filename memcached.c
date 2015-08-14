@@ -6313,7 +6313,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
             break;
 
         case conn_read:
-            if (IBV_WC_LOC_LEN_ERR) {
+            if (IBV_WC_LOC_LEN_ERR == wc->status) {
                 if (0 != resize_recv_buff(c)) {
                     rdma_conn_set_state(c, conn_closing);
                     break;
@@ -6343,26 +6343,22 @@ rdma_drive_machine(struct ibv_wc *wc) {
                 break;
             }
             
-            /* post a recv again to recv new message */
-            if (0 != rdma_post_recv(c->id, c, c->rbuf, c->rsize, c->recv_mr)) {
-                if (settings.verbose > 0) {
-                    perror("rdma_post_recv()");
-                }
-                rdma_conn_set_state(c, conn_closing);
-                break;
-            }
-            c->total_post_recv += 1;
 
-            stop = true;
             break;
 
         case conn_new_cmd:
-            rdma_conn_set_state(c, conn_waiting);
             /* TODO: avoid starving other connection */
             nreqs--;
             if (nreqs >= 0) {
                 /* do nothing */
+                if (settings.verbose > 2) {
+                    printf("continue reading new command\n");
+                }
+                rdma_conn_set_state(c, conn_waiting);
             } else {
+                if (settings.verbose > 2) {
+                    printf("stop reading new command\n");
+                }
                 stop = true;
             }
             break;
@@ -6409,6 +6405,16 @@ rdma_drive_machine(struct ibv_wc *wc) {
                 rdma_conn_set_state(c, conn_waiting);
             }
 
+            /* post a recv again to recv new message */
+            if (0 != rdma_post_recv(c->id, c, c->rbuf, c->rsize, c->recv_mr)) {
+                if (settings.verbose > 0) {
+                    perror("rdma_post_recv()");
+                }
+                rdma_conn_set_state(c, conn_closing);
+                break;
+            }
+            c->total_post_recv += 1;
+
             break;
 
         default:
@@ -6424,7 +6430,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
  ******************************************************************************/
 static int 
 resize_recv_buff(conn *c) {
-    if (0 != rdma_dereg_mr(c->send_mr)) {
+    if (0 != rdma_dereg_mr(c->recv_mr)) {
         perror("rdma_dereg_mr()");
         return -1;
     }
