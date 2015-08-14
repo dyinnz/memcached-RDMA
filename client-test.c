@@ -361,6 +361,54 @@ test_command(void *arg) {
 }
 
 /***************************************************************************//**
+ * Test speed
+ *
+ ******************************************************************************/
+static char empty_message[32] = "abcdefg";
+
+void *
+test_speed(void *arg) {
+    struct cm_connection    *cm_conn = NULL;
+    struct ibv_wc           wc;
+    struct timespec         start,
+                            finish;
+
+    int     cqe = 0;
+    int     i = 0;
+
+    clock_gettime(CLOCK_REALTIME, &start);
+
+    if ( !(cm_conn = build_connection()) ) {
+        return NULL;
+    }
+
+    if ( !(cm_conn->send_mr = rdma_reg_msgs(cm_conn->id, empty_message, 32)) ) {
+        perror("rdma_reg_msgs()");
+        return NULL;
+    }
+
+    for (i = 0; i < request_number; ++i) {
+        if (0 != rdma_post_send(cm_conn->id, cm_conn, empty_message, 32, cm_conn->send_mr, 0)) {
+            perror("rdma_post_send()");
+            break;
+        }
+
+        cqe = rdma_get_send_comp(cm_conn->id, &wc);
+        if (cqe <= 0) {
+            perror("rdma_get_send_comp()");
+            break;
+        }
+    }
+
+    rdma_dereg_mr(cm_conn->send_mr);
+
+    clock_gettime(CLOCK_REALTIME, &finish);
+    printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
+                (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
+    return NULL;
+}
+
+/***************************************************************************//**
  * main
  *
  ******************************************************************************/
