@@ -460,7 +460,8 @@ main(int argc, char *argv[]) {
     if (1 == thread_number) {
         /* thread_run(NULL); */
         /* test_command_noreply(NULL); */
-        test_command(NULL);
+        /* test_command(NULL); */
+        test_speed(NULL);
 
     } else {
         for (i = 0; i < thread_number; ++i) {
