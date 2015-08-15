@@ -64,24 +64,16 @@ enum rdma_transport {
     rdma_tcp,
 };
 
-struct rdma_context {
-    struct rdma_event_channel   *cm_channel;
-    struct event                listen_event; 
-    int                         cq_number;
-    int                         srq_number;
-} rdma_context;
-
-#define RDMA_RECV_BUFF 1024
-#define WORK_QUEUE_SIZE 16
-#define POLL_WC_SIZE 16
+struct rdma_context rdma_context;
 
 static void rdma_cm_event_handler(int fd, short libevent_event, void *arg);
 static int attach_rdma_listen_event();
 static int init_rdma_resources();
+static void rdma_release_resources();
 static int rdma_build_single();
 static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file);
 static int handle_connect_request(struct rdma_cm_id *id);
-static int preamble_qp(struct ibv_context *device_context, conn *c);
+static int preamble_qp(conn *c);
 static void rdma_release_conn(struct rdma_cm_id *id);
 static void cc_poll_event_handler(int fd, short libevent_event, void *arg);
 static void rdma_drive_machine(struct ibv_wc *wc);
@@ -765,7 +757,7 @@ static int
 rdma_add_sge(conn *c, const void *buf, int len) {
     assert(c->sge_used < IOV_MAX);
 
-    c->sge[c->sge_used].addr = (uint64_t)buf;
+    c->sge[c->sge_used].addr = (uintptr_t)buf;
     c->sge[c->sge_used].length = len;
     if (c->wbuf == buf) {
         c->sge[c->sge_used].lkey = c->send_mr->lkey; /* RDMA TODO 1 */
@@ -5126,14 +5118,37 @@ static bool sanitycheck(void) {
 static int init_rdma_resources() {
     memset(&rdma_context, 0, sizeof(struct rdma_context));
 
+    rdma_context.srq_size = 1024;      /* TODO: temporary number */
+    rdma_context.send_cq_size = 8;
+
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
         return -1;
     }
 
-    rdma_context.cq_number = 1024;      /* TODO: temporary number */
+    int num_device = 0;
+    if ( !(rdma_context.device_ctx_list = rdma_get_devices(&num_device)) ) {
+        perror("rdma_get_devices()");
+        return -1;
+    }
+    /* Assume only one device */
+    rdma_context.device_ctx_used = rdma_context.device_ctx_list[0];
+
+    if (settings.verbose > 0) {
+        fprintf(stderr, "Device number: %d\n", num_device);
+    }
 
     return 0;
+}
+
+/***************************************************************************//**
+ * Release rdma resources
+ *
+ ******************************************************************************/
+static void 
+rdma_release_resources() {
+    if (rdma_context.cm_channel) rdma_destroy_event_channel(rdma_context.cm_channel);
+    if (rdma_context.device_ctx_list) rdma_free_devices(rdma_context.device_ctx_list);
 }
 
 /***************************************************************************//**
@@ -5866,6 +5881,8 @@ int main (int argc, char **argv) {
 
     stop_assoc_maintenance_thread();
 
+    rdma_release_resources();
+
     /* remove the PID file if we're a daemon */
     if (do_daemonize)
         remove_pidfile(pid_file);
@@ -6048,26 +6065,32 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
  ******************************************************************************/
 static int handle_connect_request(struct rdma_cm_id *id) {
     conn    *c = NULL;
-    struct ibv_qp_init_attr init_qp_attr;
-
     c = calloc(1, sizeof(conn));
-    if (0 != preamble_qp(id->verbs, c)) {
-        return 0;
+    c->id  = id; 
+    id->context = c;
+
+    assign_conn_to_thread(c);
+        
+    if (0 != preamble_qp(c)) {
+        return -1;
     }
 
-    id->context = c;
-    c->id  = id; 
-
     /* TODO: adjust the parameters */
+    struct ibv_qp_init_attr init_qp_attr;
     memset(&init_qp_attr, 0, sizeof(init_qp_attr));
-    init_qp_attr.cap.max_send_wr = WORK_QUEUE_SIZE;
-    init_qp_attr.cap.max_recv_wr = WORK_QUEUE_SIZE;
-    init_qp_attr.cap.max_send_sge = WORK_QUEUE_SIZE;
-    init_qp_attr.cap.max_recv_sge = WORK_QUEUE_SIZE;
+
     init_qp_attr.sq_sig_all = 1;
     init_qp_attr.qp_type = IBV_QPT_RC;
+    init_qp_attr.srq = c->srq;
     init_qp_attr.send_cq = c->cq;
     init_qp_attr.recv_cq = c->cq;
+    init_qp_attr.qp_context = c;
+
+    init_qp_attr.cap.max_send_wr = 1;
+    init_qp_attr.cap.max_recv_wr = 1;
+    init_qp_attr.cap.max_send_sge = MAX_SGE;
+    init_qp_attr.cap.max_recv_sge = MAX_SGE;
+    init_qp_attr.cap.max_inline_data = 32;
 
     if (0 != rdma_create_qp(id, c->pd, &init_qp_attr)) {
         perror("rdma_create_qp()");
@@ -6078,22 +6101,11 @@ static int handle_connect_request(struct rdma_cm_id *id) {
         perror("rdma_accept()");
         return -1;
     }
-    printf("Accept new connection [%p].\n", (void*)id);
-
-    if (1 != settings.num_threads) {
-        dispatch_rdma_conn(c);
-
-    } else {
-        event_set(&c->event, c->comp_channel->fd, EV_READ | EV_PERSIST,
-                cc_poll_event_handler, c);
-        event_base_set(main_base, &c->event);
-
-        if (event_add(&c->event, 0) == -1) {
-            perror("event_add()");
-            return -1;
-        }
+    if (settings.verbose > 0) {
+        printf("Accept new connection [%p].\n", (void*)id);
     }
 
+    dispatch_rdma_conn(c);
     return 0;
 }
 
@@ -6101,29 +6113,18 @@ static int handle_connect_request(struct rdma_cm_id *id) {
  * Prepare complete channel, protection domain, compelete queue for queue pair
  *
  ******************************************************************************/
-static int preamble_qp(struct ibv_context *device_context, conn *c) {
-    /* TODO: query device_context if exists */
+static int preamble_qp(conn *c) {
+    assert(c->thread);
 
-    if ( !(c->comp_channel = ibv_create_comp_channel(device_context)) ) {
-        perror("ibv_create_comp_channel()");
+    if (c->id->context != rdma_context.device_ctx_used) {
+        fprintf(stderr, "Unmatched device context\n");
         return -1;
     }
 
-    if ( !(c->pd = ibv_alloc_pd(device_context)) ) {
-        perror("ibv_alloc_pd()");
-        return -1;
-    }
-
-    if ( !(c->cq = ibv_create_cq(device_context, 
-                    rdma_context.cq_number, NULL, c->comp_channel, 0)) ) {
-        perror("ibv_create_cq()");
-        return -1;
-    }
-
-    if (0 != ibv_req_notify_cq(c->cq, 0)) {
-        perror("ibv_reg_notify_cq()");
-        return -1;
-    }
+    c->comp_channel = c->thread->comp_channel;
+    c->pd = c->thread->pd;
+    c->cq = c->thread->cq;
+    c->srq = c->thread->srq;
 
     return 0;
 }
@@ -6332,7 +6333,7 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
  ******************************************************************************/
 static void
 rdma_drive_machine(struct ibv_wc *wc) {
-    conn   *c = (conn*)wc->wr_id;
+    conn   *c = (conn*)(uintptr_t)wc->wr_id;
 
     /* int     nreqs = settings.reqs_per_event; */
     /* because of there must be only one request per event, so set it to 1. */
