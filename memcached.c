@@ -6304,6 +6304,7 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->noreply = false;
     c->recvmr_list = malloc(sizeof(struct ibv_mr*) * BUFF_PER_CONN);
     c->buff_list = malloc(sizeof(char *) * BUFF_PER_CONN);
+    c->wc_ctx_list = malloc(sizeof(struct wc_context) * BUFF_PER_CONN);
     int i = 0;
     for (i = 0; i < BUFF_PER_CONN; ++i) {
         c->buff_list[i] = malloc(c->rsize);
@@ -6334,11 +6335,9 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
             perror("rdma_reg_msgs");
             return -1;
         }
-        struct wc_context *wc_ctx = malloc(sizeof(struct wc_context)); 
-        printf("post recv: wc_ctx %p\n", (void*)wc_ctx);
-        wc_ctx->c = c;
-        wc_ctx->mr = c->recvmr_list[i];
-        if (0 != rdma_post_recv(c->id, wc_ctx, c->buff_list[i], c->rsize, c->recvmr_list[i])) {
+        c->wc_ctx_list[i].c = c;
+        c->wc_ctx_list[i].mr = c->recvmr_list[i];
+        if (0 != rdma_post_recv(c->id, &c->wc_ctx_list[i], c->buff_list[i], c->rsize, c->recvmr_list[i])) {
             perror("rdma_post_recv()");
             return -1;
         }
@@ -6408,7 +6407,6 @@ rdma_drive_machine(struct ibv_wc *wc) {
                         printf("post recv OK!\n");
                     }
 
-                //    free(wc_ctx);
                     break;
                 case IBV_WC_RDMA_WRITE:
                     break;
@@ -6518,12 +6516,10 @@ rdma_drive_machine(struct ibv_wc *wc) {
         case conn_mwrite:
             c->write_state = c->state;
 
-            struct wc_context *wc_ctx = malloc(sizeof(struct wc_context));
-            wc_ctx->mr = c->send_mr;
-            wc_ctx->c = c;
-            if (0 != rdma_post_sendv(c->id, wc_ctx, c->sge, c->sge_used, 0)) {
+            c->send_wc_ctx.mr = c->send_mr;
+            c->send_wc_ctx.c = c;
+            if (0 != rdma_post_sendv(c->id, &c->send_wc_ctx, c->sge, c->sge_used, 0)) {
                 conn_set_state(c, conn_closing);
-                free(wc_ctx);
             } else {
                 conn_set_state(c, conn_waiting);
                 stop = true;

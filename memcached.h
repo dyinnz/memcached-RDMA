@@ -424,6 +424,14 @@ typedef struct {
     struct event_base *base;    /* libevent handle this thread uses */
 } LIBEVENT_DISPATCHER_THREAD;
 
+
+/***************************************************************************//**
+ * for rdma wc
+ ******************************************************************************/
+struct wc_context {
+    struct ibv_mr   *mr;
+    struct conn     *c;
+};
 /**
  * The structure representing a connection into memcached.
  */
@@ -442,8 +450,10 @@ struct conn {
     /* unique */
     char                        **buff_list;
     struct ibv_mr               **recvmr_list;
+    struct wc_context           *wc_ctx_list;
 
     struct ibv_mr               *send_mr;
+    struct wc_context           send_wc_ctx;
     struct ibv_mr               *recv_mr;
 
     struct ibv_sge              *sge;
@@ -688,8 +698,5 @@ struct rdma_context {
 };
 extern struct rdma_context rdma_context;
 
-struct wc_context {
-    struct ibv_mr   *mr;
-    struct conn     *c;
-};
+
 
