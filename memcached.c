@@ -6247,8 +6247,10 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
 
     /* RDMA PART */
     c->sge_size = IOV_LIST_INITIAL;
+    
 
-    c->rbuf = (char *)malloc((size_t)c->rsize);
+
+    /* c->rbuf = (char *)malloc((size_t)c->rsize); */
     c->wbuf = (char *)malloc((size_t)c->wsize);
     c->ilist = (item **)malloc(sizeof(item *) * c->isize);
     c->suffixlist = (char **)malloc(sizeof(char *) * c->suffixsize);
@@ -6299,25 +6301,45 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->item = 0;
 
     c->noreply = false;
+    c->recvmr_list = malloc(sizeof(struct ibv_mr*) * BUFF_PER_CONN);
+    c->buff_list = malloc(sizeof(char *) * BUFF_PER_CONN);
+    int i = 0;
+    for (i = 0; i < BUFF_PER_CONN; ++i) {
+        c->buff_list[i] = malloc(c->rsize);
+    }
 
+    /*
     if ( !(c->recv_mr = rdma_reg_msgs(c->id, c->rbuf, c->rsize)) ) {
         perror("rdma_reg_msg()");
         return -1;
     }
+    */
 
     if ( !(c->send_mr = rdma_reg_msgs(c->id, c->wbuf, c->wsize)) ) {
         perror("rdma_reg_msgs()");
         return -1;
     }
 
-    if (0 != rdma_post_send(c->id, c, c->wbuf, c->wsize, c->send_mr, 0)) {
-        perror("rdma_post_write()");
-        return -1;
-    }
-
+    /*
     if (0 != rdma_post_recv(c->id, c, c->rbuf, c->rsize, c->recv_mr)) {
         perror("rdma_post_recv()");
         return -1;
+    }
+    */
+
+    for (i = 0; i < BUFF_PER_CONN; ++i) {
+        /* RDMA TODO: notice the size, allocate a size list? */
+        if ( !(c->recvmr_list[i] = rdma_reg_msgs(c->id, c->buff_list[i], c->rsize)) ) {
+            perror("rdma_reg_msgs");
+            return -1;
+        }
+        struct wc_context *wc_ctx = malloc(sizeof(struct wc_context)); 
+        wc_ctx->c = c;
+        wc_ctx->mr = c->recvmr_list[i];
+        if (0 != rdma_post_recv(c->id, wc_ctx, c->buff_list[i], c->rsize, c->recvmr_list[i])) {
+            perror("rdma_post_recv()");
+            return -1;
+        }
     }
 
     c->total_post_recv += 1;
@@ -6340,7 +6362,9 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
  ******************************************************************************/
 static void
 rdma_drive_machine(struct ibv_wc *wc) {
-    conn   *c = (conn*)(uintptr_t)wc->wr_id;
+    struct wc_context *wc_ctx = (struct wc_context *)(uintptr_t)wc->wr_id; 
+    struct ibv_mr *mr = wc_ctx->mr;
+    conn   *c = wc_ctx->c;
 
     /* int     nreqs = settings.reqs_per_event; */
     /* because of there must be only one request per event, so set it to 1. */
@@ -6359,6 +6383,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
             /* RDMA TODO: handle these event */
             switch (wc->opcode) {
                 case IBV_WC_SEND:
+                    free(wc_ctx);
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
                         if(c->protocol == binary_prot) {
@@ -6410,13 +6435,14 @@ rdma_drive_machine(struct ibv_wc *wc) {
                 conn_set_state(c, conn_closing);
                 break;
             } else {
+                c->rbuf = mr->addr;
                 c->rcurr = c->rbuf;
                 c->rbytes = wc->byte_len;
 
                 c->total_recv_msg += 1;
                 if ((settings.verbose > 1 && c->total_recv_msg % 100 == 0) || settings.verbose > 2) {
                     printf("[total recv_msg %d, total post recv %d]\n%s\n", 
-                            c->total_recv_msg, c->total_post_recv, (char*)c->recv_mr->addr);
+                            c->total_recv_msg, c->total_post_recv, (char*)c->rbuf);
                 }
 
                 conn_set_state(c, conn_parse_cmd);
@@ -6488,9 +6514,12 @@ rdma_drive_machine(struct ibv_wc *wc) {
 
         case conn_mwrite:
             c->write_state = c->state;
-            if (0 != rdma_post_sendv(c->id, c, c->sge, c->sge_used, 0)) {
+
+            struct wc_context *wc_ctx = malloc(sizeof(struct wc_context));
+            if (0 != rdma_post_sendv(c->id, wc_ctx, c->sge, c->sge_used, 0)) {
                 conn_set_state(c, conn_closing);
             } else {
+                free(wc_ctx);
                 conn_set_state(c, conn_waiting);
                 stop = true;
             }
@@ -6508,7 +6537,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
             }
 
             /* post a recv again to recv new message */
-            if (0 != rdma_post_recv(c->id, c, c->rbuf, c->rsize, c->recv_mr)) {
+            if (0 != rdma_post_recv(c->id, wc_ctx, mr->addr, mr->length, mr)) {
                 if (settings.verbose > 0) {
                     perror("rdma_post_recv()");
                 }

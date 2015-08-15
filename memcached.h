@@ -440,6 +440,9 @@ struct conn {
     struct ibv_srq              *srq;
 
     /* unique */
+    char                        **buff_list;
+    struct ibv_mr               **recvmr_list;
+
     struct ibv_mr               *send_mr;
     struct ibv_mr               *recv_mr;
 
@@ -667,6 +670,7 @@ extern void drop_privileges(void);
 #define WORK_QUEUE_SIZE 16
 #define POLL_WC_SIZE 16
 #define MAX_SGE 128
+#define BUFF_PER_CONN 10
 
 void assign_conn_to_thread(conn *c);
 void dispatch_rdma_conn(conn *c);
@@ -683,4 +687,9 @@ struct rdma_context {
     int                         srq_size;
 };
 extern struct rdma_context rdma_context;
+
+struct wc_context {
+    struct ibv_mr   *mr;
+    struct conn     *c;
+};
 
