@@ -5118,8 +5118,8 @@ static bool sanitycheck(void) {
 static int init_rdma_resources() {
     memset(&rdma_context, 0, sizeof(struct rdma_context));
 
-    rdma_context.srq_size = 1024;      /* TODO: temporary number */
-    rdma_context.cq_size = 1024;
+    rdma_context.srq_size = 128;      /* TODO: temporary number */
+    rdma_context.cq_size = 128;
 
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
@@ -6251,6 +6251,7 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
 
 
     /* c->rbuf = (char *)malloc((size_t)c->rsize); */
+    c->rbuf = 0;
     c->wbuf = (char *)malloc((size_t)c->wsize);
     c->ilist = (item **)malloc(sizeof(item *) * c->isize);
     c->suffixlist = (char **)malloc(sizeof(char *) * c->suffixsize);
@@ -6263,7 +6264,7 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->msglist = (struct msghdr *)malloc(sizeof(struct msghdr) * c->msgsize);
 
 
-    if (c->rbuf == 0 || c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
+    if (/*c->rbuf == 0 || */c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
             c->msglist == 0 || c->suffixlist == 0) {
         STATS_LOCK();
         stats.malloc_fails++;
@@ -6334,6 +6335,7 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
             return -1;
         }
         struct wc_context *wc_ctx = malloc(sizeof(struct wc_context)); 
+        printf("post recv: wc_ctx %p\n", (void*)wc_ctx);
         wc_ctx->c = c;
         wc_ctx->mr = c->recvmr_list[i];
         if (0 != rdma_post_recv(c->id, wc_ctx, c->buff_list[i], c->rsize, c->recvmr_list[i])) {
@@ -6363,6 +6365,7 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
 static void
 rdma_drive_machine(struct ibv_wc *wc) {
     struct wc_context *wc_ctx = (struct wc_context *)(uintptr_t)wc->wr_id; 
+    printf("drive machine: %p\n", (void*)wc_ctx);
     struct ibv_mr *mr = wc_ctx->mr;
     conn   *c = wc_ctx->c;
 
@@ -6383,7 +6386,6 @@ rdma_drive_machine(struct ibv_wc *wc) {
             /* RDMA TODO: handle these event */
             switch (wc->opcode) {
                 case IBV_WC_SEND:
-                    free(wc_ctx);
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
                         if(c->protocol == binary_prot) {
@@ -6406,6 +6408,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
                         printf("post recv OK!\n");
                     }
 
+                //    free(wc_ctx);
                     break;
                 case IBV_WC_RDMA_WRITE:
                     break;
@@ -6516,10 +6519,12 @@ rdma_drive_machine(struct ibv_wc *wc) {
             c->write_state = c->state;
 
             struct wc_context *wc_ctx = malloc(sizeof(struct wc_context));
+            wc_ctx->mr = c->send_mr;
+            wc_ctx->c = c;
             if (0 != rdma_post_sendv(c->id, wc_ctx, c->sge, c->sge_used, 0)) {
                 conn_set_state(c, conn_closing);
-            } else {
                 free(wc_ctx);
+            } else {
                 conn_set_state(c, conn_waiting);
                 stop = true;
             }
@@ -6573,6 +6578,8 @@ resize_recv_buff(conn *c) {
     }
     c->rcurr = c->rbuf = new_rbuf;
     c->rsize *= 2;
+
+    assert(0);
 
     if ( !(c->recv_mr = rdma_reg_msgs(c->id, c->rbuf, c->rsize)) ) {
         perror("rdma_reg_msgs()");
