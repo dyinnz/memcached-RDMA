@@ -6370,7 +6370,9 @@ rdma_drive_machine(struct ibv_wc *wc) {
                             fprintf(stderr, "Unexpected state %d\n", c->state);
                         conn_set_state(c, conn_closing);
                     }
-                    printf("post recv OK!\n");
+                    if (settings.verbose > 0) {
+                        printf("post recv OK!\n");
+                    }
 
                     break;
                 case IBV_WC_RDMA_WRITE:
