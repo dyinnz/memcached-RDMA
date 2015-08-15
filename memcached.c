@@ -5119,7 +5119,7 @@ static int init_rdma_resources() {
     memset(&rdma_context, 0, sizeof(struct rdma_context));
 
     rdma_context.srq_size = 1024;      /* TODO: temporary number */
-    rdma_context.send_cq_size = 8;
+    rdma_context.cq_size = 1024;
 
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
@@ -5736,6 +5736,11 @@ int main (int argc, char **argv) {
         perror("failed to ignore SIGPIPE; sigaction");
         exit(EX_OSERR);
     }
+
+    if (0 !=init_rdma_resources()) {
+        printf("init_rdma_resources failed!\n");
+        return -1;
+    }
     /* start up worker threads if MT mode */
     memcached_thread_init(settings.num_threads, main_base);
 
@@ -5820,10 +5825,6 @@ int main (int argc, char **argv) {
 
     }
 
-    if (0 !=init_rdma_resources()) {
-        printf("init_rdma_resources failed!\n");
-        return -1;
-    }
 
     if (NULL == settings.socketpath) {
         const char *portnumber_filename = getenv("MEMCACHED_PORT_FILENAME");
@@ -6088,8 +6089,8 @@ static int handle_connect_request(struct rdma_cm_id *id) {
 
     init_qp_attr.cap.max_send_wr = 1;
     init_qp_attr.cap.max_recv_wr = 1;
-    init_qp_attr.cap.max_send_sge = MAX_SGE;
-    init_qp_attr.cap.max_recv_sge = MAX_SGE;
+    init_qp_attr.cap.max_send_sge = 8;
+    init_qp_attr.cap.max_recv_sge = 1;
     init_qp_attr.cap.max_inline_data = 32;
 
     if (0 != rdma_create_qp(id, c->pd, &init_qp_attr)) {
@@ -6116,7 +6117,7 @@ static int handle_connect_request(struct rdma_cm_id *id) {
 static int preamble_qp(conn *c) {
     assert(c->thread);
 
-    if (c->id->context != rdma_context.device_ctx_used) {
+    if (c->id->verbs != rdma_context.device_ctx_used) {
         fprintf(stderr, "Unmatched device context\n");
         return -1;
     }
@@ -6305,6 +6306,11 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
 
     if ( !(c->send_mr = rdma_reg_msgs(c->id, c->wbuf, c->wsize)) ) {
         perror("rdma_reg_msgs()");
+        return -1;
+    }
+
+    if (0 != rdma_post_send(c->id, c, c->wbuf, c->wsize, c->send_mr, 0)) {
+        perror("rdma_post_write()");
         return -1;
     }
 

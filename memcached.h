@@ -679,7 +679,7 @@ struct rdma_context {
     struct rdma_event_channel   *cm_channel;
     struct event                listen_event; 
 
-    int                         send_cq_size;
+    int                         cq_size;
     int                         srq_size;
 };
 extern struct rdma_context rdma_context;

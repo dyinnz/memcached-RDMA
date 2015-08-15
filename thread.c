@@ -893,17 +893,20 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
 
     struct ibv_srq_init_attr srq_init_attr;
     srq_init_attr.srq_context = NULL;
-    srq_init_attr.attr.max_sge = MAX_SGE;   
+    srq_init_attr.attr.max_sge = 1;
     srq_init_attr.attr.max_wr = rdma_context.srq_size;
-    srq_init_attr.attr.srq_limit = rdma_context.srq_size; /* RDMA TODO: what is srq_limit? */
+    srq_init_attr.attr.srq_limit = 0; /* RDMA TODO: what is srq_limit? */
 
     if ( !(me->srq = ibv_create_srq(me->pd, &srq_init_attr)) ) {
         perror("ibv_create_srq()");
         return -1;
     }
 
+    printf("max_wr: %d, max_sge: %d, srq_limit: %d\n", srq_init_attr.attr.max_wr,
+            srq_init_attr.attr.max_wr, srq_init_attr.attr.srq_limit);
+
     if ( !(me->cq = ibv_create_cq(rdma_context.device_ctx_used, 
-                    rdma_context.send_cq_size, NULL, me->comp_channel, 0)) ) {
+                    rdma_context.cq_size, NULL, me->comp_channel, 0)) ) {
         perror("ibv_create_cq()");
         return -1;
     }
