@@ -6097,6 +6097,7 @@ static int handle_connect_request(struct rdma_cm_id *id) {
         perror("rdma_create_qp()");
         return -1;
     }
+    id->srq = c->srq;
 
     if (0 != rdma_accept(id, NULL)) {
         perror("rdma_accept()");
