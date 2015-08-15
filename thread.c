@@ -17,7 +17,13 @@
 
 #define ITEMS_PER_ALLOC 64
 
+
+/***************************************************************************//**
+ * RDMA Part
+ ******************************************************************************/
 struct conn;
+
+static int init_rdma_thread_resources(LIBEVENT_THREAD *me);
 
 /* An item in the connection queue. */
 typedef struct conn_queue_item CQ_ITEM;
@@ -331,6 +337,11 @@ void accept_new_conns(const bool do_accept) {
  * Set up a thread's information.
  */
 static void setup_thread(LIBEVENT_THREAD *me) {
+    if (0 != init_rdma_thread_resources(me)) {
+        fprintf(stderr, "Can't init rdma resources in thread\n");
+        exit(1);
+    }
+
     me->base = event_init();
     if (! me->base) {
         fprintf(stderr, "Can't allocate event base\n");
@@ -826,6 +837,13 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
  *
  ******************************************************************************/
 void
+assign_conn_to_thread(conn *c) {
+    int tid = (last_thread + 1) % settings.num_threads;
+    last_thread = tid;
+    c->thread = threads + tid;
+}
+
+void
 dispatch_rdma_conn(conn *cm_ctx) {
     CQ_ITEM *item = cqi_new();
     char buf[1];
@@ -836,11 +854,7 @@ dispatch_rdma_conn(conn *cm_ctx) {
         return ;
     }
 
-    int tid = (last_thread + 1) % settings.num_threads;
-
-    LIBEVENT_THREAD *thread = threads + tid;
-
-    last_thread = tid;
+    LIBEVENT_THREAD *thread = cm_ctx->thread;
 
     /* The four members are constant */
     item->sfd = 0;  /* do not use */
@@ -859,3 +873,46 @@ dispatch_rdma_conn(conn *cm_ctx) {
         perror("Writing to thread notify pipe");
     }
 }
+
+/***************************************************************************//**
+ * init rdma thread resources
+ *
+ ******************************************************************************/
+static int
+init_rdma_thread_resources(LIBEVENT_THREAD *me) {
+    if ( !(me->comp_channel = ibv_create_comp_channel(rdma_context.device_ctx_used)) ) {
+        perror("ibv_create_comp_channel()");
+        return -1;
+    }
+    me->ack_events = 0;
+
+    if ( !(me->pd = ibv_alloc_pd(rdma_context.device_ctx_used)) ) {
+        perror("ibv_alloc_pd()");
+        return -1;
+    }
+
+    struct ibv_srq_init_attr srq_init_attr;
+    srq_init_attr.srq_context = NULL;
+    srq_init_attr.attr.max_sge = MAX_SGE;   
+    srq_init_attr.attr.max_wr = rdma_context.srq_size;
+    srq_init_attr.attr.srq_limit = rdma_context.srq_size; /* RDMA TODO: what is srq_limit? */
+
+    if ( !(me->srq = ibv_create_srq(me->pd, &srq_init_attr)) ) {
+        perror("ibv_create_srq()");
+        return -1;
+    }
+
+    if ( !(me->cq = ibv_create_cq(rdma_context.device_ctx_used, 
+                    rdma_context.send_cq_size, NULL, me->comp_channel, 0)) ) {
+        perror("ibv_create_cq()");
+        return -1;
+    }
+
+    if (0 != ibv_req_notify_cq(me->cq, 0)) {
+        perror("ibv_reg_notify_cq()");
+        return -1;
+    }
+
+    return 0;
+}
+

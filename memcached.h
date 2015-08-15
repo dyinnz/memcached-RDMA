@@ -663,7 +663,24 @@ extern void drop_privileges(void);
  *
  ******************************************************************************/
 
-void dispatch_rdma_conn(conn *cm_ctx);
-int init_rdma_new_conn(conn *cm_ctx, enum conn_states init_state,
+#define RDMA_RECV_BUFF 1024
+#define WORK_QUEUE_SIZE 16
+#define POLL_WC_SIZE 16
+#define MAX_SGE 128
+
+void assign_conn_to_thread(conn *c);
+void dispatch_rdma_conn(conn *c);
+int init_rdma_new_conn(conn *c, enum conn_states init_state,
                    const int read_buffer_size, struct event_base *base);
+
+struct rdma_context {
+    struct ibv_context          **device_ctx_list;
+    struct ibv_context          *device_ctx_used;
+    struct rdma_event_channel   *cm_channel;
+    struct event                listen_event; 
+
+    int                         send_cq_size;
+    int                         srq_size;
+};
+extern struct rdma_context rdma_context;
 
