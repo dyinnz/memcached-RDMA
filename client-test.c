@@ -30,7 +30,6 @@ static char     *pstr_port = "11211";
 static int      thread_number = 1;
 static int      request_number = 10000;
 static int      last_time = 1000;    /* secs */
-static int      is_recv = 0;
 static int      verbose = 0;
 
 /***************************************************************************//**
@@ -131,7 +130,7 @@ build_connection() {
 static void 
 disconnect(struct cm_connection *cm_conn) {
     rdma_disconnect(cm_conn->id);
-    /* rdma_dereg_mr(cm_conn->recv_mr); */
+    rdma_dereg_mr(cm_conn->recv_mr);
     rdma_destroy_ep(cm_conn->id);
     free(cm_conn);
 }
@@ -168,42 +167,6 @@ send_msg(struct cm_connection *cm_conn, char *msg, size_t size) {
     return 0;
 }
 
-/*
-static int 
-send_msg(struct cm_connection *cm_conn, char *msg, size_t size) {
-    struct ibv_wc   wc;
-    int             cqe = 0;
-
-    if ( !(cm_conn->send_mr = rdma_reg_msgs(cm_conn->id, msg, size)) ) {
-        perror("rdma_reg_msgs():");
-        return -1;
-    }
-
-    if (0 != rdma_post_send(cm_conn->id, cm_conn, msg, size, cm_conn->send_mr, 0)) {
-        perror("rdma_post_send()");
-        rdma_dereg_mr(cm_conn->send_mr);
-        return -1;
-    }
-
-    while (true) {
-        cqe = ibv_poll_cq(cm_conn->id->send_cq, q, &wc);
-        if (IBV_WC_SUCCESS == wc.status && wc.opcode & IBV_WC_SEND) {
-            break;
-        }
-    }
-
-    if (cqe <= 0) {
-        perror("rdma_get_send_comp()");
-        rdma_dereg_mr(cm_conn->send_mr);
-        return -1;
-    }
-
-    // printf("send msgs OK!\n");
-    rdma_dereg_mr(cm_conn->send_mr);
-    return 0;
-}
-*/
-
 /***************************************************************************//**
  * Receive message bt RDMA recv operation
  *
@@ -229,41 +192,6 @@ recv_msg(struct cm_connection *cm_conn) {
     }
 
     return 0;
-}
-
-/***************************************************************************//**
- * The thread run function
- * 
- ******************************************************************************/
-#define SEND_BUFF_SIZE 32
-
-void *thread_run(void *arg) {
-    struct cm_connection    *cm_conn = NULL;
-
-    char    send_buff[SEND_BUFF_SIZE] = "hello world";
-    int     i = 0;
-
-
-    if ( !(cm_conn = build_connection()) ) {
-        return NULL;
-    }
-
-    for (i = 0; i < request_number; ++i) {
-        sprintf(send_buff, "message %d\n", i);
-
-        if (0 != send_msg(cm_conn, send_buff, SEND_BUFF_SIZE)) {
-            printf("send_msg() error!\n");
-            break;
-        }
-
-        if (is_recv && 0 != recv_msg(cm_conn)) {
-            printf("recv_msg() error!\n");
-            break;
-        }
-    }
-
-    disconnect(cm_conn);
-    return NULL;
 }
 
 /***************************************************************************//**
@@ -357,6 +285,105 @@ test_command(void *arg) {
     printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
                 (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
 
+    return NULL;
+}
+
+/***************************************************************************//**
+ * send mr
+ ******************************************************************************/
+int 
+send_mr(struct rdma_cm_id *id, struct ibv_mr *mr) {
+    if (0 != rdma_post_send(id, id->context, mr->addr, mr->length, mr, 0)) {
+        perror("rdma_post_send()");
+        return -1;
+    }
+
+    struct ibv_wc wc;
+    int cqe = rdma_get_send_comp(id, &wc);
+    if (cqe <= 0) {
+        perror("rdma_get_send_cmp()");
+        return -1;
+    }
+
+    return 0;
+}
+
+/***************************************************************************//**
+ * Test command with registered memory
+ *
+ ******************************************************************************/
+void *
+test_with_regmem(void *arg) {
+    struct cm_connection *cm_conn = NULL;
+    struct timespec start,
+                    finish;
+    int i = 0;
+
+    clock_gettime(CLOCK_REALTIME, &start);
+    if ( !(cm_conn = build_connection()) ) {
+        return NULL;
+    }
+
+    printf("noreply:\n");
+
+    struct ibv_mr   *add_noreply_mr = rdma_reg_msgs(cm_conn->id, add_noreply, sizeof(add_noreply));
+    struct ibv_mr   *set_noreply_mr = rdma_reg_msgs(cm_conn->id, set_noreply, sizeof(set_noreply));
+    struct ibv_mr   *replace_noreply_mr = rdma_reg_msgs(cm_conn->id, replace_noreply, sizeof(replace_noreply));
+    struct ibv_mr   *append_noreply_mr = rdma_reg_msgs(cm_conn->id, append_noreply, sizeof(append_noreply));
+    struct ibv_mr   *prepend_noreply_mr = rdma_reg_msgs(cm_conn->id, prepend_noreply, sizeof(prepend_noreply));
+    struct ibv_mr   *incr_noreply_mr = rdma_reg_msgs(cm_conn->id, incr_noreply, sizeof(incr_noreply));
+    struct ibv_mr   *decr_noreply_mr = rdma_reg_msgs(cm_conn->id, decr_noreply, sizeof(decr_noreply));
+    struct ibv_mr   *delete_noreply_mr = rdma_reg_msgs(cm_conn->id, delete_noreply, sizeof(delete_noreply));
+
+    for (i = 0; i < request_number; ++i) {
+        send_mr(cm_conn->id, add_noreply_mr);
+        send_mr(cm_conn->id, set_noreply_mr);
+        send_mr(cm_conn->id, replace_noreply_mr);
+        send_mr(cm_conn->id, append_noreply_mr);
+        send_mr(cm_conn->id, prepend_noreply_mr);
+        send_mr(cm_conn->id, incr_noreply_mr);
+        send_mr(cm_conn->id, decr_noreply_mr);
+        send_mr(cm_conn->id, delete_noreply_mr);
+    }
+
+    clock_gettime(CLOCK_REALTIME, &finish);
+    printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
+                (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
+
+    printf("\nreply:\n");
+    clock_gettime(CLOCK_REALTIME, &start);
+
+    struct ibv_mr   *add_reply_mr = rdma_reg_msgs(cm_conn->id, add_reply, sizeof(add_reply));
+    struct ibv_mr   *set_reply_mr = rdma_reg_msgs(cm_conn->id, set_reply, sizeof(set_reply));
+    struct ibv_mr   *replace_reply_mr = rdma_reg_msgs(cm_conn->id, replace_reply, sizeof(replace_reply));
+    struct ibv_mr   *append_reply_mr = rdma_reg_msgs(cm_conn->id, append_reply, sizeof(append_reply));
+    struct ibv_mr   *prepend_reply_mr = rdma_reg_msgs(cm_conn->id, prepend_reply, sizeof(prepend_reply));
+    struct ibv_mr   *incr_reply_mr = rdma_reg_msgs(cm_conn->id, incr_reply, sizeof(incr_reply));
+    struct ibv_mr   *decr_reply_mr = rdma_reg_msgs(cm_conn->id, decr_reply, sizeof(decr_reply));
+    struct ibv_mr   *delete_reply_mr = rdma_reg_msgs(cm_conn->id, delete_reply, sizeof(delete_reply));
+
+    for (i = 0; i < request_number; ++i) {
+        send_mr(cm_conn->id, add_reply_mr);
+        recv_msg(cm_conn);
+        send_mr(cm_conn->id, set_reply_mr);
+        recv_msg(cm_conn);
+        send_mr(cm_conn->id, replace_reply_mr);
+        recv_msg(cm_conn);
+        send_mr(cm_conn->id, append_reply_mr);
+        recv_msg(cm_conn);
+        send_mr(cm_conn->id, prepend_reply_mr);
+        recv_msg(cm_conn);
+        send_mr(cm_conn->id, incr_reply_mr);
+        recv_msg(cm_conn);
+        send_mr(cm_conn->id, decr_reply_mr);
+        recv_msg(cm_conn);
+        send_mr(cm_conn->id, delete_reply_mr);
+        recv_msg(cm_conn);
+    }
+
+    clock_gettime(CLOCK_REALTIME, &finish);
+    printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
+                (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
     return NULL;
 }
 
@@ -458,16 +485,16 @@ main(int argc, char *argv[]) {
     clock_gettime(CLOCK_REALTIME, &start);
 
     if (1 == thread_number) {
-        /* thread_run(NULL); */
+        test_command(NULL);
         /* test_command_noreply(NULL); */
-         test_command(NULL);
         /*test_speed(NULL);*/
+        test_with_regmem(NULL);
 
     } else {
         for (i = 0; i < thread_number; ++i) {
             printf("Thread %d\n begin\n", i);
 
-            if (0 != pthread_create(threads+i, NULL, thread_run, NULL)) {
+            if (0 != pthread_create(threads+i, NULL, test_command, NULL)) {
                 return -1;
             }
         }
