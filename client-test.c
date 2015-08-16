@@ -350,6 +350,8 @@ test_with_regmem(void *arg) {
     printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
                 (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
 
+    return NULL;
+
     printf("\nreply:\n");
     clock_gettime(CLOCK_REALTIME, &start);
 
@@ -485,7 +487,7 @@ main(int argc, char *argv[]) {
     clock_gettime(CLOCK_REALTIME, &start);
 
     if (1 == thread_number) {
-        test_command(NULL);
+        /*test_command(NULL);*/
         /* test_command_noreply(NULL); */
         /*test_speed(NULL);*/
         test_with_regmem(NULL);

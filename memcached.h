@@ -680,7 +680,7 @@ extern void drop_privileges(void);
 #define WORK_QUEUE_SIZE 16
 #define POLL_WC_SIZE 16
 #define MAX_SGE 128
-#define BUFF_PER_CONN 10
+#define BUFF_PER_CONN 100
 
 void assign_conn_to_thread(conn *c);
 void dispatch_rdma_conn(conn *c);

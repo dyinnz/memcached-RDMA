@@ -6087,9 +6087,9 @@ static int handle_connect_request(struct rdma_cm_id *id) {
     init_qp_attr.recv_cq = c->cq;
     init_qp_attr.qp_context = c;
 
-    init_qp_attr.cap.max_send_wr = 1;
+    init_qp_attr.cap.max_send_wr = 16;
     init_qp_attr.cap.max_recv_wr = 1;
-    init_qp_attr.cap.max_send_sge = 8;
+    init_qp_attr.cap.max_send_sge = 16;
     init_qp_attr.cap.max_recv_sge = 1;
     init_qp_attr.cap.max_inline_data = 32;
 
@@ -6201,8 +6201,16 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
         ibv_ack_cq_events(cq, 1);
     }
 
+    if (0 != ibv_req_notify_cq(cq, 0)) {
+        perror("ibv_reg_notify_cq()");
+        return;
+    }
+
     cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
-    if (cqe <= 0) {
+    if (POLL_WC_SIZE == cqe) {
+        printf("%d\n", cqe);
+    }
+    if (cqe < 0) {
         perror("ibv_poll_cq()");
         return;
     }
@@ -6217,10 +6225,6 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
         rdma_drive_machine(&wc[i]);
     }
 
-    if (0 != ibv_req_notify_cq(cq, 0)) {
-        perror("ibv_reg_notify_cq()");
-        return;
-    }
 }
 
 /***************************************************************************//**
@@ -6364,7 +6368,6 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
 static void
 rdma_drive_machine(struct ibv_wc *wc) {
     struct wc_context *wc_ctx = (struct wc_context *)(uintptr_t)wc->wr_id; 
-    printf("drive machine: %p\n", (void*)wc_ctx);
     struct ibv_mr *mr = wc_ctx->mr;
     conn   *c = wc_ctx->c;
 
@@ -6403,11 +6406,8 @@ rdma_drive_machine(struct ibv_wc *wc) {
                             fprintf(stderr, "Unexpected state %d\n", c->state);
                         conn_set_state(c, conn_closing);
                     }
-                    if (settings.verbose > 0) {
-                        printf("post recv OK!\n");
-                    }
-
                     break;
+
                 case IBV_WC_RDMA_WRITE:
                     break;
                 case IBV_WC_RDMA_READ:
@@ -6441,7 +6441,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
                 c->rbytes = wc->byte_len;
 
                 c->total_recv_msg += 1;
-                if ((settings.verbose > 1 && c->total_recv_msg % 100 == 0) || settings.verbose > 2) {
+                if ((settings.verbose > 0 && c->total_recv_msg % 100 == 0) || settings.verbose > 2) {
                     printf("[total recv_msg %d, total post recv %d]\n%s\n", 
                             c->total_recv_msg, c->total_post_recv, (char*)c->rbuf);
                 }
@@ -6518,9 +6518,11 @@ rdma_drive_machine(struct ibv_wc *wc) {
 
             c->send_wc_ctx.mr = c->send_mr;
             c->send_wc_ctx.c = c;
+            //printf("read to post send\n");
             if (0 != rdma_post_sendv(c->id, &c->send_wc_ctx, c->sge, c->sge_used, 0)) {
                 conn_set_state(c, conn_closing);
             } else {
+             //   printf("post send ok\n");
                 conn_set_state(c, conn_waiting);
                 stop = true;
             }
