@@ -79,6 +79,8 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg);
 static void rdma_drive_machine(struct ibv_wc *wc);
 static int resize_recv_buff(conn *c);
 static int rdma_add_sge(conn *c, const void *buf, int len);
+
+static int periodic_poll(int fd, short libevent_event, void *arg);
  
 /*
  * forward declarations
@@ -6224,7 +6226,54 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
     for (i = 0; i < cqe; ++i) {
         rdma_drive_machine(&wc[i]);
     }
+}
 
+static void new_cc_poll_event_handler(int fd, short libevent_event, void *arg) {
+    conn            *c = arg;
+    struct ibv_cq   *cq = NULL;
+    struct ibv_wc   wc[POLL_WC_SIZE]; 
+
+    int             cqe = 0,
+                    i = 0;
+    void            *null = NULL;
+
+    memset(wc, 0, sizeof(wc));
+
+    if ((cqe = ibv_poll_cq(c->cq, POLL_WC_SIZE, wc)) < 0) {
+        perror("ibv_poll_cq():");
+        return;
+    }
+    if (0 != ibv_req_notify_cq(cq, 0)) {
+        perror("ibv_reg_notify_cq()");
+        return;
+    }
+    for (i = 0; i < cqe; ++i) {
+        rdma_drive_machine(&wc[i]);
+    }
+
+    if ((cqe = ibv_poll_cq(c->cq, POLL_WC_SIZE, wc)) < 0) {
+        perror("ibv_poll_cq():");
+        return;
+    }       
+    for (i = 0; i < cqe; ++i) {
+        rdma_drive_machine(&wc[i]);
+    }
+
+    if (0 != ibv_get_cq_event(c->comp_channel, &cq, &null)) {
+        perror("ibv_get_cq_event()");
+        return;
+    }
+    
+    if (c->thread) {
+        /* multithread */
+        if (++(c->thread->ack_events) == 8) {
+            ibv_ack_cq_events(cq, 8);
+            c->thread->ack_events = 0;
+        }
+    } else {
+        /* main thread */
+        ibv_ack_cq_events(cq, 1);
+    }
 }
 
 /***************************************************************************//**
@@ -6350,8 +6399,10 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->total_post_recv += 1;
     c->state = init_state;
 
+    //event_set(&c->event, c->comp_channel->fd, EV_READ | EV_PERSIST,
+            //cc_poll_event_handler, c);
     event_set(&c->event, c->comp_channel->fd, EV_READ | EV_PERSIST,
-            cc_poll_event_handler, c);
+            new_cc_poll_event_handler, c);
     event_base_set(base, &c->event);
 
     if (event_add(&c->event, 0) == -1) {
