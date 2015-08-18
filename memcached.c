@@ -80,7 +80,7 @@ static void rdma_drive_machine(struct ibv_wc *wc);
 static int resize_recv_buff(conn *c);
 static int rdma_add_sge(conn *c, const void *buf, int len);
 
-static int periodic_poll(int fd, short libevent_event, void *arg);
+static void periodic_poll(int fd, short libevent_event, void *arg);
  
 /*
  * forward declarations
@@ -6399,16 +6399,20 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->total_post_recv += 1;
     c->state = init_state;
 
-    //event_set(&c->event, c->comp_channel->fd, EV_READ | EV_PERSIST,
-            //cc_poll_event_handler, c);
     event_set(&c->event, c->comp_channel->fd, EV_READ | EV_PERSIST,
-            new_cc_poll_event_handler, c);
+            cc_poll_event_handler, c);
     event_base_set(base, &c->event);
 
     if (event_add(&c->event, 0) == -1) {
         perror("event_add()");
         return -1;
     }
+
+    struct timeval t = { .tv_sec = 1, .tv_usec = 0 };
+    struct event *time_event = calloc(1, sizeof(struct event));
+    evtimer_set(time_event, periodic_poll, c->thread);
+    event_base_set(base, time_event);
+    evtimer_add(time_event, &t);
 
     return 0;
 }
@@ -6641,5 +6645,28 @@ resize_recv_buff(conn *c) {
     }
 
     return 0;
+}
+
+/***************************************************************************//**
+ *  
+ ******************************************************************************/
+static void
+periodic_poll(int fd, short libevent_event, void *arg) {
+    LIBEVENT_THREAD *me = arg;
+    int cqe = 0, i = 0;
+    struct ibv_wc wc[POLL_WC_SIZE];
+
+    if ((cqe = ibv_poll_cq(me->cq, POLL_WC_SIZE, wc)) < 0) {
+        perror("ibv_poll_cq()");
+        return;
+    }
+    
+    if (cqe > 0) {
+        printf("periodic_poll cqe: %d\n", cqe);
+    }
+
+    for (i = 0; i < cqe; ++i) {
+        rdma_drive_machine(&wc[i]);
+    }
 }
 
