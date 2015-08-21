@@ -337,11 +337,6 @@ void accept_new_conns(const bool do_accept) {
  * Set up a thread's information.
  */
 static void setup_thread(LIBEVENT_THREAD *me) {
-    if (0 != init_rdma_thread_resources(me)) {
-        fprintf(stderr, "Can't init rdma resources in thread\n");
-        exit(1);
-    }
-
     me->base = event_init();
     if (! me->base) {
         fprintf(stderr, "Can't allocate event base\n");
@@ -374,6 +369,11 @@ static void setup_thread(LIBEVENT_THREAD *me) {
                                     NULL, NULL);
     if (me->suffix_cache == NULL) {
         fprintf(stderr, "Failed to create suffix cache\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (0 != init_rdma_thread_resources(me)) {
+        fprintf(stderr, "Can't init rdma resources in thread\n");
         exit(EXIT_FAILURE);
     }
 }
@@ -412,9 +412,9 @@ static void thread_libevent_process(int fd, short which, void *arg) {
     case 'c':
         item = cq_pop(me->new_conn_queue);
         if (NULL != item) {
-            if (0 != init_rdma_new_conn(item->cm_ctx, item->init_state,
+            if (0 != rdma_conn_init(item->cm_ctx, item->init_state,
                     item->read_buffer_size, me->base)) {
-                perror("init_rdma_new_conn()");
+                perror("rdma_conn_init()");
                 rdma_disconnect(item->cm_ctx->id);
 
             } else {
@@ -902,9 +902,6 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
         return -1;
     }
 
-    printf("max_wr: %d, max_sge: %d, srq_limit: %d\n", srq_init_attr.attr.max_wr,
-            srq_init_attr.attr.max_sge, srq_init_attr.attr.srq_limit);
-
     if ( !(me->cq = ibv_create_cq(rdma_context.device_ctx_used, 
                     rdma_context.cq_size, NULL, me->comp_channel, 0)) ) {
         perror("ibv_create_cq()");
@@ -913,6 +910,21 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
 
     if (0 != ibv_req_notify_cq(me->cq, 0)) {
         perror("ibv_reg_notify_cq()");
+        return -1;
+    }
+
+    if (settings.verbose > 0) {
+        printf("SRQ: max_wr: %d, max_sge: %d, srq_limit: %d.\n", srq_init_attr.attr.max_wr,
+                srq_init_attr.attr.max_sge, srq_init_attr.attr.srq_limit);
+        printf("CQ: cq_size: %d.\n", me->cq->cqe);
+    }
+
+    event_set(&me->poll_event, me->comp_channel->fd, EV_READ | EV_PERSIST,
+            cc_poll_event_handler, me);
+    event_base_set(me->base, &me->poll_event);
+
+    if (event_add(&me->poll_event, 0) == -1) {
+        perror("event_add()");
         return -1;
     }
 
