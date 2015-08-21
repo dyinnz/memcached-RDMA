@@ -59,6 +59,9 @@
  * rdma part
  ******************************************************************************/
 
+#define BUFF_PER_CONN 128
+#define POLL_WC_SIZE 128
+
 enum rdma_transport {
     rdma_udp,
     rdma_tcp,
@@ -5120,8 +5123,8 @@ static bool sanitycheck(void) {
 static int init_rdma_resources() {
     memset(&rdma_context, 0, sizeof(struct rdma_context));
 
-    rdma_context.srq_size = 128;      /* TODO: temporary number */
-    rdma_context.cq_size = 128;
+    rdma_context.srq_size = 1024;      /* TODO: temporary number */
+    rdma_context.cq_size = 1024;
 
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
@@ -6084,17 +6087,17 @@ static int handle_connect_request(struct rdma_cm_id *id) {
 
     init_qp_attr.sq_sig_all = 1;
     init_qp_attr.qp_type = IBV_QPT_RC;
-    init_qp_attr.srq = c->srq;
     init_qp_attr.send_cq = c->cq;
     init_qp_attr.recv_cq = c->cq;
     init_qp_attr.qp_context = c;
 
-    init_qp_attr.cap.max_send_wr = 16;
-    init_qp_attr.cap.max_recv_wr = 1;
+    init_qp_attr.cap.max_send_wr = 128;
+    init_qp_attr.cap.max_recv_wr = rdma_context.srq_size;
     init_qp_attr.cap.max_send_sge = 16;
-    init_qp_attr.cap.max_recv_sge = 1;
+    init_qp_attr.cap.max_recv_sge = 16;
     init_qp_attr.cap.max_inline_data = 32;
 
+    init_qp_attr.srq = c->srq;
     if (0 != rdma_create_qp(id, c->pd, &init_qp_attr)) {
         perror("rdma_create_qp()");
         return -1;
@@ -6209,7 +6212,7 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
     }
 
     cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
-    if (POLL_WC_SIZE == cqe) {
+    if (settings.verbose > 1 && POLL_WC_SIZE == cqe) {
         printf("%d\n", cqe);
     }
     if (cqe < 0) {
@@ -6225,54 +6228,6 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
 
     for (i = 0; i < cqe; ++i) {
         rdma_drive_machine(&wc[i]);
-    }
-}
-
-static void new_cc_poll_event_handler(int fd, short libevent_event, void *arg) {
-    conn            *c = arg;
-    struct ibv_cq   *cq = NULL;
-    struct ibv_wc   wc[POLL_WC_SIZE]; 
-
-    int             cqe = 0,
-                    i = 0;
-    void            *null = NULL;
-
-    memset(wc, 0, sizeof(wc));
-
-    if ((cqe = ibv_poll_cq(c->cq, POLL_WC_SIZE, wc)) < 0) {
-        perror("ibv_poll_cq():");
-        return;
-    }
-    if (0 != ibv_req_notify_cq(cq, 0)) {
-        perror("ibv_reg_notify_cq()");
-        return;
-    }
-    for (i = 0; i < cqe; ++i) {
-        rdma_drive_machine(&wc[i]);
-    }
-
-    if ((cqe = ibv_poll_cq(c->cq, POLL_WC_SIZE, wc)) < 0) {
-        perror("ibv_poll_cq():");
-        return;
-    }       
-    for (i = 0; i < cqe; ++i) {
-        rdma_drive_machine(&wc[i]);
-    }
-
-    if (0 != ibv_get_cq_event(c->comp_channel, &cq, &null)) {
-        perror("ibv_get_cq_event()");
-        return;
-    }
-    
-    if (c->thread) {
-        /* multithread */
-        if (++(c->thread->ack_events) == 8) {
-            ibv_ack_cq_events(cq, 8);
-            c->thread->ack_events = 0;
-        }
-    } else {
-        /* main thread */
-        ibv_ack_cq_events(cq, 1);
     }
 }
 
@@ -6408,11 +6363,13 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
         return -1;
     }
 
+    /*
     struct timeval t = { .tv_sec = 1, .tv_usec = 0 };
     struct event *time_event = calloc(1, sizeof(struct event));
     evtimer_set(time_event, periodic_poll, c->thread);
     event_base_set(base, time_event);
     evtimer_add(time_event, &t);
+    */
 
     return 0;
 }
@@ -6496,7 +6453,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
                 c->rbytes = wc->byte_len;
 
                 c->total_recv_msg += 1;
-                if ((settings.verbose > 0 && c->total_recv_msg % 100 == 0) || settings.verbose > 2) {
+                if ((settings.verbose > 0 && c->total_recv_msg % 1000 == 0) || settings.verbose > 2) {
                     printf("[total recv_msg %d, total post recv %d]\n%s\n", 
                             c->total_recv_msg, c->total_post_recv, (char*)c->rbuf);
                 }
@@ -6645,28 +6602,5 @@ resize_recv_buff(conn *c) {
     }
 
     return 0;
-}
-
-/***************************************************************************//**
- *  
- ******************************************************************************/
-static void
-periodic_poll(int fd, short libevent_event, void *arg) {
-    LIBEVENT_THREAD *me = arg;
-    int cqe = 0, i = 0;
-    struct ibv_wc wc[POLL_WC_SIZE];
-
-    if ((cqe = ibv_poll_cq(me->cq, POLL_WC_SIZE, wc)) < 0) {
-        perror("ibv_poll_cq()");
-        return;
-    }
-    
-    if (cqe > 0) {
-        printf("periodic_poll cqe: %d\n", cqe);
-    }
-
-    for (i = 0; i < cqe; ++i) {
-        rdma_drive_machine(&wc[i]);
-    }
 }
 
