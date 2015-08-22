@@ -6087,7 +6087,7 @@ rdma_conn_new() {
     c->hdrbuf = 0;
 
     /* c->rsize = read_buffer_size; */
-    c->wsize = DATA_BUFFER_SIZE;
+    c->rsize = DATA_BUFFER_SIZE;
     c->wsize = DATA_BUFFER_SIZE;
     c->isize = ITEM_LIST_INITIAL;
     c->suffixsize = SUFFIX_LIST_INITIAL;
@@ -6289,7 +6289,7 @@ cc_poll_event_handler(int fd, short libevent_event, void *arg) {
 
     cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
     if (settings.verbose > 1 && POLL_WC_SIZE == cqe) {
-        printf("%d\n", cqe);
+        printf("get cqe: %d\n", cqe);
     }
     if (cqe < 0) {
         perror("ibv_poll_cq()");
@@ -6365,6 +6365,7 @@ rdma_conn_init(conn *c, enum conn_states init_state,
     }
     c->total_post_recv += rdma_context.buff_per_conn;
 
+    /*
     event_set(&c->event, c->comp_channel->fd, EV_READ | EV_PERSIST,
             cc_poll_event_handler, c->thread);
     event_base_set(base, &c->event);
@@ -6373,6 +6374,7 @@ rdma_conn_init(conn *c, enum conn_states init_state,
         perror("event_add()");
         return -1;
     }
+    */
 
     return 0;
 }
@@ -6400,8 +6402,6 @@ rdma_drive_machine(struct ibv_wc *wc) {
         switch (c->state) {
 
         case conn_waiting:
-            printf("%d\n", (int)wc->opcode);
-
             if (IBV_WC_RECV & wc->opcode) {
                 conn_set_state(c, conn_read);
                 break;
