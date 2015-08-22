@@ -5116,6 +5116,7 @@ static int init_rdma_resources() {
 
     rdma_context.srq_size = 1024;      /* TODO: temporary number */
     rdma_context.cq_size = 1024;
+    rdma_context.buff_per_conn = 128;
 
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
@@ -6295,8 +6296,7 @@ cc_poll_event_handler(int fd, short libevent_event, void *arg) {
         return;
     }
 
-    /* printf("Get cqe: %d\n", cqe); */
-    if (settings.verbose > 1 && cqe > 1) {
+    if (settings.verbose > 2 && cqe > 1) {
         printf("Get more than one cqe: %d\n", cqe);
     }
 
@@ -6345,15 +6345,15 @@ rdma_conn_init(conn *c, enum conn_states init_state,
     c->mr_used = 0;
 
     if ( !(c->send_mr = rdma_reg_msgs(c->id, c->wbuf, c->wsize)) ) {
-        perror("rdma_reg_msgs()");
+        perror("register write buff, rdma_reg_msgs()");
         return -1;
     }
 
     int i = 0;
-    for (i = 0; i < BUFF_PER_CONN; ++i) {
+    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
         /* RDMA TODO: notice the size, allocate a size list? */
         if ( !(c->rmr_list[i] = rdma_reg_msgs(c->id, c->rbuf_list[i], c->rsize)) ) {
-            perror("rdma_reg_msgs()");
+            perror("register recv buff, rdma_reg_msgs()");
             return -1;
         }
         c->wc_ctx_list[i].c = c;
@@ -6364,6 +6364,15 @@ rdma_conn_init(conn *c, enum conn_states init_state,
         }
     }
     c->total_post_recv += rdma_context.buff_per_conn;
+
+    event_set(&c->event, c->comp_channel->fd, EV_READ | EV_PERSIST,
+            cc_poll_event_handler, c->thread);
+    event_base_set(base, &c->event);
+
+    if (event_add(&c->event, 0) == -1) {
+        perror("event_add()");
+        return -1;
+    }
 
     return 0;
 }
@@ -6383,10 +6392,16 @@ rdma_drive_machine(struct ibv_wc *wc) {
     int     nreqs = 1;
     bool    stop = false; 
 
+    if (IBV_WC_SUCCESS != wc->status) {
+        printf("Bad wc\n");
+    }
+
     while (!stop) {
         switch (c->state) {
 
         case conn_waiting:
+            printf("%d\n", (int)wc->opcode);
+
             if (IBV_WC_RECV & wc->opcode) {
                 conn_set_state(c, conn_read);
                 break;
@@ -6395,6 +6410,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
             /* RDMA TODO: handle these event */
             switch (wc->opcode) {
                 case IBV_WC_SEND:
+                    printf("test\n");
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
                         if(c->protocol == binary_prot) {

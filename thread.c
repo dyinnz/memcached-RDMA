@@ -919,6 +919,7 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
         printf("CQ: cq_size: %d.\n", me->cq->cqe);
     }
 
+    /* 
     event_set(&me->poll_event, me->comp_channel->fd, EV_READ | EV_PERSIST,
             cc_poll_event_handler, me);
     event_base_set(me->base, &me->poll_event);
@@ -927,6 +928,8 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
         perror("event_add()");
         return -1;
     }
+    */
+    
 
     return 0;
 }
