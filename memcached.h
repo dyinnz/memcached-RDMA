@@ -448,8 +448,8 @@ struct conn {
     struct ibv_srq              *srq;
 
     /* unique */
-    char                        **buff_list;
-    struct ibv_mr               **recvmr_list;
+    char                        **rbuf_list;
+    struct ibv_mr               **rmr_list;
     struct wc_context           *wc_ctx_list;
 
     struct ibv_mr               *send_mr;
@@ -689,6 +689,7 @@ struct rdma_context {
 
     int                         cq_size;
     int                         srq_size;
+    int                         buff_per_conn;
 };
 extern struct rdma_context rdma_context;
 

@@ -59,7 +59,6 @@
  * rdma part
  ******************************************************************************/
 
-#define BUFF_PER_CONN 128
 #define POLL_WC_SIZE 128
 
 enum rdma_transport {
@@ -83,8 +82,6 @@ static void rdma_drive_machine(struct ibv_wc *wc);
 static int resize_recv_buff(conn *c);
 static int rdma_add_sge(conn *c, const void *buf, int len);
 
-static void periodic_poll(int fd, short libevent_event, void *arg);
- 
 /*
  * forward declarations
  */
@@ -5125,6 +5122,7 @@ static int init_rdma_resources() {
 
     rdma_context.srq_size = 1024;      /* TODO: temporary number */
     rdma_context.cq_size = 1024;
+    rdma_context.buff_per_conn = 128;
 
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
@@ -5730,7 +5728,9 @@ int main (int argc, char **argv) {
     /* initialize other stuff */
     stats_init();
     assoc_init(settings.hashpower_init);
-    conn_init();
+    while (0) {
+        conn_init();
+    }
     slabs_init(settings.maxbytes, settings.factor, preallocate);
 
     /*
@@ -6180,7 +6180,7 @@ static void rdma_release_conn(struct rdma_cm_id *id) {
  *
  ******************************************************************************/
 static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
-    conn       *c = arg;
+    LIBEVENT_THREAD         *me = arg;
     struct ibv_cq           *cq = NULL;
     struct ibv_wc           wc[POLL_WC_SIZE];
     
@@ -6190,20 +6190,15 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
 
     memset(wc, 0, sizeof(wc));
 
-    if (0 != ibv_get_cq_event(c->comp_channel, &cq, &null)) {
+    if (0 != ibv_get_cq_event(me->comp_channel, &cq, &null)) {
         perror("ibv_get_cq_event()");
         return;
     }
     
-    if (c->thread) {
-        /* multithread */
-        if (++(c->thread->ack_events) == 8) {
-            ibv_ack_cq_events(cq, 8);
-            c->thread->ack_events = 0;
-        }
-    } else {
-        /* main thread */
-        ibv_ack_cq_events(cq, 1);
+    /* multithread */
+    if (++(me->ack_events) == 8) {
+        ibv_ack_cq_events(cq, 8);
+        me->ack_events = 0;
     }
 
     if (0 != ibv_req_notify_cq(cq, 0)) {
@@ -6221,7 +6216,6 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
     }
 
     /* printf("Get cqe: %d\n", cqe); */
-    c->total_cqe += cqe;
     if (settings.verbose > 1 && cqe > 1) {
         printf("Get more than one cqe: %d\n", cqe);
     }
@@ -6310,12 +6304,12 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->item = 0;
 
     c->noreply = false;
-    c->recvmr_list = malloc(sizeof(struct ibv_mr*) * BUFF_PER_CONN);
-    c->buff_list = malloc(sizeof(char *) * BUFF_PER_CONN);
-    c->wc_ctx_list = malloc(sizeof(struct wc_context) * BUFF_PER_CONN);
+    c->rmr_list = malloc(sizeof(struct ibv_mr*) * rdma_context.buff_per_conn);
+    c->rbuf_list = malloc(sizeof(char *) * rdma_context.buff_per_conn);
+    c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_conn);
     int i = 0;
-    for (i = 0; i < BUFF_PER_CONN; ++i) {
-        c->buff_list[i] = malloc(c->rsize);
+    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+        c->rbuf_list[i] = malloc(c->rsize);
     }
 
     /*
@@ -6337,15 +6331,15 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     }
     */
 
-    for (i = 0; i < BUFF_PER_CONN; ++i) {
+    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
         /* RDMA TODO: notice the size, allocate a size list? */
-        if ( !(c->recvmr_list[i] = rdma_reg_msgs(c->id, c->buff_list[i], c->rsize)) ) {
+        if ( !(c->rmr_list[i] = rdma_reg_msgs(c->id, c->rbuf_list[i], c->rsize)) ) {
             perror("rdma_reg_msgs");
             return -1;
         }
         c->wc_ctx_list[i].c = c;
-        c->wc_ctx_list[i].mr = c->recvmr_list[i];
-        if (0 != rdma_post_recv(c->id, &c->wc_ctx_list[i], c->buff_list[i], c->rsize, c->recvmr_list[i])) {
+        c->wc_ctx_list[i].mr = c->rmr_list[i];
+        if (0 != rdma_post_recv(c->id, &c->wc_ctx_list[i], c->rbuf_list[i], c->rsize, c->rmr_list[i])) {
             perror("rdma_post_recv()");
             return -1;
         }
@@ -6355,7 +6349,7 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->state = init_state;
 
     event_set(&c->event, c->comp_channel->fd, EV_READ | EV_PERSIST,
-            cc_poll_event_handler, c);
+            cc_poll_event_handler, c->thread);
     event_base_set(base, &c->event);
 
     if (event_add(&c->event, 0) == -1) {
@@ -6382,6 +6376,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
     struct wc_context *wc_ctx = (struct wc_context *)(uintptr_t)wc->wr_id; 
     struct ibv_mr *mr = wc_ctx->mr;
     conn   *c = wc_ctx->c;
+    c->total_cqe += 1;
 
     /* int     nreqs = settings.reqs_per_event; */
     /* because of there must be only one request per event, so set it to 1. */
