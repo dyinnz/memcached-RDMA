@@ -77,11 +77,15 @@ static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_
 static int handle_connect_request(struct rdma_cm_id *id);
 static int preamble_qp(conn *c);
 static void rdma_release_conn(struct rdma_cm_id *id);
-static void cc_poll_event_handler(int fd, short libevent_event, void *arg);
 static void rdma_drive_machine(struct ibv_wc *wc);
 static int resize_recv_buff(conn *c);
 static int rdma_add_sge(conn *c, const void *buf, int len);
+<<<<<<< HEAD
 
+=======
+static conn* rdma_conn_new();
+ 
+>>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
 /*
  * forward declarations
  */
@@ -497,14 +501,7 @@ conn *conn_new(const int sfd, enum conn_states init_state,
 
     c->noreply = false;
 
-    event_set(&c->event, sfd, event_flags, event_handler, (void *)c);
-    event_base_set(base, &c->event);
     c->ev_flags = event_flags;
-
-    if (event_add(&c->event, 0) == -1) {
-        perror("event_add");
-        return NULL;
-    }
 
     STATS_LOCK();
     stats.curr_conns++;
@@ -5912,7 +5909,8 @@ int main (int argc, char **argv) {
  * binding single port on server
  *
  ******************************************************************************/
-static int rdma_build_single(const char *interface, 
+static int 
+rdma_build_single(const char *interface, 
                              int port, 
                              enum rdma_transport transport,
                              FILE *portnumber_file) {
@@ -5985,7 +5983,8 @@ static int rdma_build_single(const char *interface,
  * buid rmda str_listening
  *
  ******************************************************************************/
-static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file) {
+static int 
+rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file) {
 
     if (settings.inter == NULL) {
         return rdma_build_single(NULL, port, transport, portnumber_file);
@@ -6026,7 +6025,8 @@ static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_
  * rdma listenning callback 
  * 
  ******************************************************************************/
-static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
+static void 
+rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
     struct rdma_cm_event    *cm_event = NULL;
     struct rdma_cm_id       *id = NULL;
     conn       *c = NULL;
@@ -6066,12 +6066,93 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
 }
 
 /***************************************************************************//**
+ * allocate a new conn or reuse an old conn
+ *
+ ******************************************************************************/
+static conn* 
+rdma_conn_new() {
+    /* RDMA TODO: retrieve a conn */
+    conn *c = NULL;
+
+    if (!(c = (conn *)calloc(1, sizeof(conn)))) {
+        STATS_LOCK();
+        stats.malloc_fails++;
+        STATS_UNLOCK();
+        fprintf(stderr, "Failed to allocate connection object\n");
+        return NULL;
+    }
+
+    c->rbuf = c->wbuf = 0;
+    c->ilist = 0;
+    c->suffixlist = 0;
+    c->iov = 0;
+    c->msglist = 0;
+    c->hdrbuf = 0;
+
+    /* c->rsize = read_buffer_size; */
+    c->rsize = DATA_BUFFER_SIZE;
+    c->wsize = DATA_BUFFER_SIZE;
+    c->isize = ITEM_LIST_INITIAL;
+    c->suffixsize = SUFFIX_LIST_INITIAL;
+    c->iovsize = IOV_LIST_INITIAL;
+    c->msgsize = MSG_LIST_INITIAL;
+    c->hdrsize = 0;
+    
+    /* RDMA TODO: decrease memory allocate */
+    /* c->rbuf = (char *)malloc((size_t)c->rsize); */
+    c->wbuf = (char *)malloc((size_t)c->wsize);
+    c->ilist = (item **)malloc(sizeof(item *) * c->isize);
+    c->suffixlist = (char **)malloc(sizeof(char *) * c->suffixsize);
+    c->iov = (struct iovec *)malloc(sizeof(struct iovec) * c->iovsize);
+    c->msglist = (struct msghdr *)malloc(sizeof(struct msghdr) * c->msgsize);
+
+    c->sge_size = IOV_LIST_INITIAL;
+    c->sge = malloc(sizeof(struct ibv_sge) * c->sge_size);
+    c->mr_list = malloc(sizeof(struct ibv_mr*) * c->sge_size);
+
+    if (/*c->rbuf == 0 ||*/ c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
+            c->msglist == 0 || c->suffixlist == 0) {
+        conn_free(c);
+        STATS_LOCK();
+        stats.malloc_fails++;
+        STATS_UNLOCK();
+        fprintf(stderr, "Failed to allocate buffers for connection\n");
+        return NULL;
+    }
+
+    STATS_LOCK();
+    stats.conn_structs++;
+    stats.curr_conns++;
+    stats.total_conns++;
+    STATS_UNLOCK();
+
+    /* don't use sfd, set it as 0 */
+    c->sfd = 0;
+    /* conns[sfd] = c; */
+
+    c->rmr_list = malloc(sizeof(struct ibv_mr*) * rdma_context.buff_per_conn);
+    c->rbuf_list = malloc(sizeof(char *) * rdma_context.buff_per_conn);
+    c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_conn);
+    int i = 0;
+    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+        c->rbuf_list[i] = malloc(c->rsize);
+    }
+
+    return c;
+}
+
+
+/***************************************************************************//**
  * handle connect request 
  *
  ******************************************************************************/
-static int handle_connect_request(struct rdma_cm_id *id) {
-    conn    *c = NULL;
-    c = calloc(1, sizeof(conn));
+static int 
+handle_connect_request(struct rdma_cm_id *id) {
+    conn *c = rdma_conn_new();
+    if (!c) {
+        return -1;
+    }
+
     c->id  = id; 
     id->context = c;
 
@@ -6120,7 +6201,8 @@ static int handle_connect_request(struct rdma_cm_id *id) {
  * Prepare complete channel, protection domain, compelete queue for queue pair
  *
  ******************************************************************************/
-static int preamble_qp(conn *c) {
+static int 
+preamble_qp(conn *c) {
     assert(c->thread);
 
     if (c->id->verbs != rdma_context.device_ctx_used) {
@@ -6140,7 +6222,8 @@ static int preamble_qp(conn *c) {
  * Release relative resources and disconnect this id
  *
  ******************************************************************************/
-static void rdma_release_conn(struct rdma_cm_id *id) {
+static void 
+rdma_release_conn(struct rdma_cm_id *id) {
     conn    *c = id->context;
     int     i = 0; 
 
@@ -6179,7 +6262,12 @@ static void rdma_release_conn(struct rdma_cm_id *id) {
  * poll handler for comlete channel
  *
  ******************************************************************************/
+<<<<<<< HEAD
 static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
+=======
+void 
+cc_poll_event_handler(int fd, short libevent_event, void *arg) {
+>>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
     LIBEVENT_THREAD         *me = arg;
     struct ibv_cq           *cq = NULL;
     struct ibv_wc           wc[POLL_WC_SIZE];
@@ -6195,7 +6283,11 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
         return;
     }
     
+<<<<<<< HEAD
     /* multithread */
+=======
+    /* RDMA TODO: adjust ack_events */
+>>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
     if (++(me->ack_events) == 8) {
         ibv_ack_cq_events(cq, 8);
         me->ack_events = 0;
@@ -6208,15 +6300,19 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
 
     cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
     if (settings.verbose > 1 && POLL_WC_SIZE == cqe) {
-        printf("%d\n", cqe);
+        printf("get cqe: %d\n", cqe);
     }
     if (cqe < 0) {
         perror("ibv_poll_cq()");
         return;
     }
 
+<<<<<<< HEAD
     /* printf("Get cqe: %d\n", cqe); */
     if (settings.verbose > 1 && cqe > 1) {
+=======
+    if (settings.verbose > 2 && cqe > 1) {
+>>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
         printf("Get more than one cqe: %d\n", cqe);
     }
 
@@ -6230,51 +6326,8 @@ static void cc_poll_event_handler(int fd, short libevent_event, void *arg) {
  *
  ******************************************************************************/
 int
-init_rdma_new_conn(conn *c, enum conn_states init_state,
+rdma_conn_init(conn *c, enum conn_states init_state,
                    const int read_buffer_size, struct event_base *base) {
-    c->rbuf = c->wbuf = 0;
-    c->ilist = 0;
-    c->suffixlist = 0;
-    c->iov = 0;
-    c->msglist = 0;
-    c->hdrbuf = 0;
-
-    c->rsize = read_buffer_size;
-    c->wsize = DATA_BUFFER_SIZE;
-    c->isize = ITEM_LIST_INITIAL;
-    c->suffixsize = SUFFIX_LIST_INITIAL;
-    c->iovsize = IOV_LIST_INITIAL;
-    c->msgsize = MSG_LIST_INITIAL;
-    c->hdrsize = 0;
-
-    /* RDMA PART */
-    c->sge_size = IOV_LIST_INITIAL;
-    
-
-
-    /* c->rbuf = (char *)malloc((size_t)c->rsize); */
-    c->rbuf = 0;
-    c->wbuf = (char *)malloc((size_t)c->wsize);
-    c->ilist = (item **)malloc(sizeof(item *) * c->isize);
-    c->suffixlist = (char **)malloc(sizeof(char *) * c->suffixsize);
-
-    c->sge = malloc(sizeof(struct ibv_sge) * c->sge_size);
-    c->mr_list = malloc(sizeof(struct ibv_mr*) * c->sge_size);
-
-    /* the two members are used for sending message */
-    c->iov = (struct iovec *)malloc(sizeof(struct iovec) * c->iovsize);
-    c->msglist = (struct msghdr *)malloc(sizeof(struct msghdr) * c->msgsize);
-
-
-    if (/*c->rbuf == 0 || */c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
-            c->msglist == 0 || c->suffixlist == 0) {
-        STATS_LOCK();
-        stats.malloc_fails++;
-        STATS_UNLOCK();
-        fprintf(stderr, "Failed to allocate buffers for connection\n");
-        return -1;
-    }
-
     /* c->transport = transport; */
     c->protocol = settings.binding_protocol;
 
@@ -6295,15 +6348,12 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     c->msgused = 0;
     c->authenticated = false;
 
-    /* RDMA PART */
-    c->sge_used = 0;
-    c->mr_used = 0;
-
     c->write_and_go = init_state;
     c->write_and_free = 0;
     c->item = 0;
 
     c->noreply = false;
+<<<<<<< HEAD
     c->rmr_list = malloc(sizeof(struct ibv_mr*) * rdma_context.buff_per_conn);
     c->rbuf_list = malloc(sizeof(char *) * rdma_context.buff_per_conn);
     c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_conn);
@@ -6311,30 +6361,32 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
     for (i = 0; i < rdma_context.buff_per_conn; ++i) {
         c->rbuf_list[i] = malloc(c->rsize);
     }
+=======
+>>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
 
-    /*
-    if ( !(c->recv_mr = rdma_reg_msgs(c->id, c->rbuf, c->rsize)) ) {
-        perror("rdma_reg_msg()");
-        return -1;
-    }
-    */
+    /* c->ev_flags = event_flags; */
+
+   /* RDMA PART */
+    c->sge_used = 0;
+    c->mr_used = 0;
 
     if ( !(c->send_mr = rdma_reg_msgs(c->id, c->wbuf, c->wsize)) ) {
-        perror("rdma_reg_msgs()");
+        perror("register write buff, rdma_reg_msgs()");
         return -1;
     }
 
-    /*
-    if (0 != rdma_post_recv(c->id, c, c->rbuf, c->rsize, c->recv_mr)) {
-        perror("rdma_post_recv()");
-        return -1;
-    }
-    */
-
+<<<<<<< HEAD
     for (i = 0; i < rdma_context.buff_per_conn; ++i) {
         /* RDMA TODO: notice the size, allocate a size list? */
         if ( !(c->rmr_list[i] = rdma_reg_msgs(c->id, c->rbuf_list[i], c->rsize)) ) {
             perror("rdma_reg_msgs");
+=======
+    int i = 0;
+    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+        /* RDMA TODO: notice the size, allocate a size list? */
+        if ( !(c->rmr_list[i] = rdma_reg_msgs(c->id, c->rbuf_list[i], c->rsize)) ) {
+            perror("register recv buff, rdma_reg_msgs()");
+>>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
             return -1;
         }
         c->wc_ctx_list[i].c = c;
@@ -6344,10 +6396,9 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
             return -1;
         }
     }
+    c->total_post_recv += rdma_context.buff_per_conn;
 
-    c->total_post_recv += 1;
-    c->state = init_state;
-
+    /*
     event_set(&c->event, c->comp_channel->fd, EV_READ | EV_PERSIST,
             cc_poll_event_handler, c->thread);
     event_base_set(base, &c->event);
@@ -6356,13 +6407,6 @@ init_rdma_new_conn(conn *c, enum conn_states init_state,
         perror("event_add()");
         return -1;
     }
-
-    /*
-    struct timeval t = { .tv_sec = 1, .tv_usec = 0 };
-    struct event *time_event = calloc(1, sizeof(struct event));
-    evtimer_set(time_event, periodic_poll, c->thread);
-    event_base_set(base, time_event);
-    evtimer_add(time_event, &t);
     */
 
     return 0;
@@ -6378,10 +6422,15 @@ rdma_drive_machine(struct ibv_wc *wc) {
     conn   *c = wc_ctx->c;
     c->total_cqe += 1;
 
+    c->total_cqe += 1;
     /* int     nreqs = settings.reqs_per_event; */
     /* because of there must be only one request per event, so set it to 1. */
     int     nreqs = 1;
     bool    stop = false; 
+
+    if (IBV_WC_SUCCESS != wc->status) {
+        printf("Bad wc\n");
+    }
 
     while (!stop) {
         switch (c->state) {
@@ -6395,6 +6444,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
             /* RDMA TODO: handle these event */
             switch (wc->opcode) {
                 case IBV_WC_SEND:
+                    printf("test\n");
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
                         if(c->protocol == binary_prot) {
@@ -6598,4 +6648,5 @@ resize_recv_buff(conn *c) {
 
     return 0;
 }
+
 

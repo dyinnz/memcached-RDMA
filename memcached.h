@@ -417,6 +417,7 @@ typedef struct {
     struct ibv_pd               *pd;
     struct ibv_cq               *cq;
     struct ibv_srq              *srq;
+    struct event                poll_event;
 } LIBEVENT_THREAD;
 
 typedef struct {
@@ -678,8 +679,9 @@ extern void drop_privileges(void);
 
 void assign_conn_to_thread(conn *c);
 void dispatch_rdma_conn(conn *c);
-int init_rdma_new_conn(conn *c, enum conn_states init_state,
+int rdma_conn_init(conn *c, enum conn_states init_state,
                    const int read_buffer_size, struct event_base *base);
+void cc_poll_event_handler(int fd, short libevent_event, void *arg);
 
 struct rdma_context {
     struct ibv_context          **device_ctx_list;

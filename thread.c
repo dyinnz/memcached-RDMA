@@ -374,7 +374,11 @@ static void setup_thread(LIBEVENT_THREAD *me) {
 
     if (0 != init_rdma_thread_resources(me)) {
         fprintf(stderr, "Can't init rdma resources in thread\n");
+<<<<<<< HEAD
         exit(1);
+=======
+        exit(EXIT_FAILURE);
+>>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
     }
 }
 
@@ -412,9 +416,9 @@ static void thread_libevent_process(int fd, short which, void *arg) {
     case 'c':
         item = cq_pop(me->new_conn_queue);
         if (NULL != item) {
-            if (0 != init_rdma_new_conn(item->cm_ctx, item->init_state,
+            if (0 != rdma_conn_init(item->cm_ctx, item->init_state,
                     item->read_buffer_size, me->base)) {
-                perror("init_rdma_new_conn()");
+                perror("rdma_conn_init()");
                 rdma_disconnect(item->cm_ctx->id);
 
             } else {
@@ -914,9 +918,24 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
     }
 
     if (settings.verbose > 0) {
+<<<<<<< HEAD
         printf("SRQ: max_wr: %d, max_sge: %d, srq_limit: %d\n", srq_init_attr.attr.max_wr,
                 srq_init_attr.attr.max_sge, srq_init_attr.attr.srq_limit);
         printf("CQ: cq_size: %d\n", me->cq->cqe);
+=======
+        printf("SRQ: max_wr: %d, max_sge: %d, srq_limit: %d.\n", srq_init_attr.attr.max_wr,
+                srq_init_attr.attr.max_sge, srq_init_attr.attr.srq_limit);
+        printf("CQ: cq_size: %d.\n", me->cq->cqe);
+    }
+
+    event_set(&me->poll_event, me->comp_channel->fd, EV_READ | EV_PERSIST,
+            cc_poll_event_handler, me);
+    event_base_set(me->base, &me->poll_event);
+
+    if (event_add(&me->poll_event, 0) == -1) {
+        perror("event_add()");
+        return -1;
+>>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
     }
 
     return 0;
