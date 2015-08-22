@@ -374,11 +374,7 @@ static void setup_thread(LIBEVENT_THREAD *me) {
 
     if (0 != init_rdma_thread_resources(me)) {
         fprintf(stderr, "Can't init rdma resources in thread\n");
-<<<<<<< HEAD
-        exit(1);
-=======
         exit(EXIT_FAILURE);
->>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
     }
 }
 
@@ -918,11 +914,6 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
     }
 
     if (settings.verbose > 0) {
-<<<<<<< HEAD
-        printf("SRQ: max_wr: %d, max_sge: %d, srq_limit: %d\n", srq_init_attr.attr.max_wr,
-                srq_init_attr.attr.max_sge, srq_init_attr.attr.srq_limit);
-        printf("CQ: cq_size: %d\n", me->cq->cqe);
-=======
         printf("SRQ: max_wr: %d, max_sge: %d, srq_limit: %d.\n", srq_init_attr.attr.max_wr,
                 srq_init_attr.attr.max_sge, srq_init_attr.attr.srq_limit);
         printf("CQ: cq_size: %d.\n", me->cq->cqe);
@@ -935,7 +926,6 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
     if (event_add(&me->poll_event, 0) == -1) {
         perror("event_add()");
         return -1;
->>>>>>> 27278fe804916c787ab4c8b23b3bd2b92e9012e2
     }
 
     return 0;
