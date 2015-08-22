@@ -678,7 +678,7 @@ extern void drop_privileges(void);
 
 void assign_conn_to_thread(conn *c);
 void dispatch_rdma_conn(conn *c);
-int init_rdma_new_conn(conn *c, enum conn_states init_state,
+int rdma_conn_init(conn *c, enum conn_states init_state,
                    const int read_buffer_size, struct event_base *base);
 
 struct rdma_context {

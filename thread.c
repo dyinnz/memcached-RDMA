@@ -412,7 +412,7 @@ static void thread_libevent_process(int fd, short which, void *arg) {
     case 'c':
         item = cq_pop(me->new_conn_queue);
         if (NULL != item) {
-            if (0 != init_rdma_new_conn(item->cm_ctx, item->init_state,
+            if (0 != rdma_conn_init(item->cm_ctx, item->init_state,
                     item->read_buffer_size, me->base)) {
                 perror("init_rdma_new_conn()");
                 rdma_disconnect(item->cm_ctx->id);
