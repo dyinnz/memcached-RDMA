@@ -5138,11 +5138,13 @@ static bool sanitycheck(void) {
  * init global rdma resources 
  ******************************************************************************/
 static int init_rdma_resources() {
-    memset(&rdma_context, 0, sizeof(struct rdma_context));
 
     rdma_context.srq_size = 1024;      /* TODO: temporary number */
     rdma_context.cq_size = 1024;
-    rdma_context.buff_per_conn = 128;
+    if (rdma_context.buff_per_conn == 0) {
+        rdma_context.buff_per_conn = 1024;
+    }
+    printf("buff_per_conn: %d\n", rdma_context.buff_per_conn);
 
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
@@ -5306,8 +5308,12 @@ int main (int argc, char **argv) {
           "S"   /* Sasl ON */
           "F"   /* Disable flush_all */
           "o:"  /* Extended generic options */
+          "Y:"  /* buff per thread */
         ))) {
         switch (c) {
+        case 'Y':
+            rdma_context.buff_per_conn = atoi(optarg);
+            break;
         case 'A':
             /* enables "shutdown" command */
             settings.shutdown_command = true;
@@ -6385,7 +6391,9 @@ rdma_drive_machine(struct ibv_wc *wc) {
     conn *c = hashtable_search(qp_hash, wc->qp_num);
     struct ibv_mr *mr = (struct ibv_mr*)(uintptr_t)wc->wr_id;
 
-    printf("qp num in wc [%d]\n", wc->qp_num);
+    if (settings.verbose > 2) {
+        printf("qp num in wc [%d]\n", wc->qp_num);
+    }
     c->total_cqe += 1;
 
     if (IBV_WC_SUCCESS != wc->status) {
