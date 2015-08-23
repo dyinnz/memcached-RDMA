@@ -401,6 +401,7 @@ typedef struct {
     uint32_t        remaining;  /* Max keys to crawl per slab per invocation */
 } crawler;
 
+struct hashtable_t;
 typedef struct {
     pthread_t thread_id;        /* unique ID of this thread */
     struct event_base *base;    /* libevent handle this thread uses */
@@ -424,6 +425,9 @@ typedef struct {
     struct ibv_mr               **rmr_list;
     struct ibv_sge              *rsglist;
     struct ibv_recv_wr          *rwr_list;
+    struct ibv_wc               *poll_wc;
+
+    struct hashtable_t          *qp_hash;
 } LIBEVENT_THREAD;
 
 typedef struct {
@@ -697,9 +701,27 @@ struct rdma_context {
 
     int                         cq_size;
     int                         srq_size;
-    int                         buff_per_conn;
+    int                         buff_per_thread;
+    int                         poll_wc_size;
 };
 extern struct rdma_context rdma_context;
 
+/* hash table */
+typedef struct hash_item_t {
+    struct hash_item_t *next;
+    int32_t key;
+    void *p;
+} hash_item_s;
 
+typedef struct hashtable_t {
+    size_t size;
+    hash_item_s *T;
+} hashtable_s;
+
+hashtable_s* hashtable_create(size_t size);
+size_t calc_hash(hashtable_s *h, int32_t key);
+void hashtable_free(hashtable_s *h);
+int hashtable_insert(hashtable_s *h, int32_t key, void *p);
+void *hashtable_search(hashtable_s *h, int32_t key);
+void hashtable_delete(hashtable_s *h, int32_t key);
 

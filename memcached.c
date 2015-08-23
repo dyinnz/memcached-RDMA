@@ -59,8 +59,6 @@
  * rdma part
  ******************************************************************************/
 
-#define POLL_WC_SIZE 128
-
 enum rdma_transport {
     rdma_udp,
     rdma_tcp,
@@ -76,34 +74,13 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg);
 static int attach_rdma_listen_event();
 static int preamble_qp(conn *c);
 static int handle_connect_request(struct rdma_cm_id *id);
-static void rdma_drive_machine(struct ibv_wc *wc);
+static void rdma_drive_machine(struct ibv_wc *wc, conn* c);
 static int resize_recv_buff(conn *c);
 static int rdma_add_sge(conn *c, const void *buf, int len);
 
 static conn* rdma_conn_new();
 static void rdma_conn_cleanup(conn *c); 
 static void rdma_conn_free(conn *c);
-
-/* hash table */
-typedef struct hash_item_t {
-    struct hash_item_t *next;
-    int32_t key;
-    void *p;
-} hash_item_s;
-
-typedef struct hashtable_t {
-    size_t size;
-    hash_item_s *T;
-} hashtable_s;
-
-hashtable_s *qp_hash = NULL;
-
-hashtable_s* hashtable_create(size_t size);
-size_t calc_hash(hashtable_s *h, int32_t key);
-void hashtable_free(hashtable_s *h);
-int hashtable_insert(hashtable_s *h, int32_t key, void *p);
-void *hashtable_search(hashtable_s *h, int32_t key);
-void hashtable_delete(hashtable_s *h, int32_t key);
 
 /*
  * forward declarations
@@ -5141,10 +5118,12 @@ static int init_rdma_resources() {
 
     rdma_context.srq_size = 1024;      /* TODO: temporary number */
     rdma_context.cq_size = 1024;
-    if (rdma_context.buff_per_conn == 0) {
-        rdma_context.buff_per_conn = 1024;
+    if (rdma_context.buff_per_thread == 0) {
+        rdma_context.buff_per_thread = 128;
     }
-    printf("buff_per_conn: %d\n", rdma_context.buff_per_conn);
+    if (rdma_context.poll_wc_size == 0) {
+        rdma_context.poll_wc_size = 128;
+    }
 
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
@@ -5161,10 +5140,6 @@ static int init_rdma_resources() {
 
     if (settings.verbose > 0) {
         fprintf(stderr, "Device number: %d\n", num_device);
-    }
-
-    if ( !(qp_hash = hashtable_create(settings.maxconns)) ) {
-        fprintf(stderr, "create hashtable error.\n");
     }
 
     return 0;
@@ -5312,7 +5287,7 @@ int main (int argc, char **argv) {
         ))) {
         switch (c) {
         case 'Y':
-            rdma_context.buff_per_conn = atoi(optarg);
+            rdma_context.buff_per_thread = atoi(optarg);
             break;
         case 'A':
             /* enables "shutdown" command */
@@ -6138,20 +6113,20 @@ rdma_conn_new() {
 
     c->sge_size = IOV_LIST_INITIAL;
     c->sge = malloc(sizeof(struct ibv_sge) * c->sge_size);
-    c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_conn);
+    c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_thread);
 
     c->mr_list = calloc(c->sge_size, sizeof(struct ibv_mr*));
-    c->rmr_list = calloc(rdma_context.buff_per_conn, sizeof(struct ibv_mr*));
-    c->rbuf_list = calloc(rdma_context.buff_per_conn, sizeof(char *));
+    c->rmr_list = calloc(rdma_context.buff_per_thread, sizeof(struct ibv_mr*));
+    c->rbuf_list = calloc(rdma_context.buff_per_thread, sizeof(char *));
 
     int i = 0;
-    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+    for (i = 0; i < rdma_context.buff_per_thread; ++i) {
         c->rbuf_list[i] = malloc(c->rsize);
         if (c->rbuf_list[i] == 0) {
             break;
         }
     }
-    if (i != rdma_context.buff_per_conn) {
+    if (i != rdma_context.buff_per_thread) {
         int j = 0;
         for (j = 0; j < i; ++j) {
             free(c->rbuf_list[j]);
@@ -6231,11 +6206,6 @@ handle_connect_request(struct rdma_cm_id *id) {
     id->srq = c->srq;
 
     printf("id's qp [%p], qp num [%d]\n", (void*)id->qp, id->qp->qp_num);
-    if (0 != hashtable_insert(qp_hash, id->qp->qp_num, c)) {
-        fprintf(stderr, "hashtable insert error!\n");
-        return -1;
-    }
-
     if (0 != rdma_accept(id, NULL)) {
         perror("rdma_accept()");
         return -1;
@@ -6275,15 +6245,10 @@ preamble_qp(conn *c) {
  ******************************************************************************/
 void 
 cc_poll_event_handler(int fd, short libevent_event, void *arg) {
-    LIBEVENT_THREAD         *me = arg;
-    struct ibv_cq           *cq = NULL;
-    struct ibv_wc           wc[POLL_WC_SIZE];
-    
-    int         cqe = 0, 
-                i = 0;
-    void        *null = NULL; 
-
-    memset(wc, 0, sizeof(wc));
+    LIBEVENT_THREAD *me = arg;
+    struct ibv_cq *cq = NULL;
+    int cqe = 0, i = 0;
+    void *null = NULL; 
 
     if (0 != ibv_get_cq_event(me->comp_channel, &cq, &null)) {
         perror("ibv_get_cq_event()");
@@ -6301,8 +6266,8 @@ cc_poll_event_handler(int fd, short libevent_event, void *arg) {
         return;
     }
 
-    cqe = ibv_poll_cq(cq, POLL_WC_SIZE, wc);
-    if (settings.verbose > 1 && POLL_WC_SIZE == cqe) {
+    cqe = ibv_poll_cq(cq, rdma_context.poll_wc_size, me->poll_wc);
+    if (settings.verbose > 1 && rdma_context.poll_wc_size == cqe) {
         printf("get cqe: %d\n", cqe);
     }
     if (cqe < 0) {
@@ -6314,8 +6279,10 @@ cc_poll_event_handler(int fd, short libevent_event, void *arg) {
         printf("Get more than one cqe: %d\n", cqe);
     }
 
+    conn *c = NULL;
     for (i = 0; i < cqe; ++i) {
-        rdma_drive_machine(&wc[i]);
+        c = hashtable_search(me->qp_hash, me->poll_wc[i].qp_num);
+        rdma_drive_machine(me->poll_wc + i, c);
     }
 }
 
@@ -6356,7 +6323,12 @@ rdma_conn_init(conn *c, enum conn_states init_state,
     /* RDMA PART */
     c->sge_used = 0;
     c->mr_used = 0;
-       
+
+    if (0 != hashtable_insert(c->thread->qp_hash, c->id->qp->qp_num, c)) {
+        fprintf(stderr, "hashtable insert error!\n");
+        return -1;
+    }
+
     /*
     // RDMA TODO: handle error 
     if ( !(c->send_mr = rdma_reg_msgs(c->id, c->wbuf, c->wsize)) ) {
@@ -6365,7 +6337,7 @@ rdma_conn_init(conn *c, enum conn_states init_state,
     }
 
     int i = 0;
-    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+    for (i = 0; i < rdma_context.buff_per_thread; ++i) {
         // RDMA TODO: notice the size, allocate a size list?
         if ( !(c->rmr_list[i] = rdma_reg_msgs(c->id, c->rbuf_list[i], c->rsize)) ) {
             perror("register recv buff, rdma_reg_msgs()");
@@ -6378,7 +6350,7 @@ rdma_conn_init(conn *c, enum conn_states init_state,
             return -1;
         }
     }
-    c->total_post_recv += rdma_context.buff_per_conn;
+    c->total_post_recv += rdma_context.buff_per_thread;
     */
     return 0;
 }
@@ -6387,8 +6359,7 @@ rdma_conn_init(conn *c, enum conn_states init_state,
  * RDAM drive machine
  ******************************************************************************/
 static void
-rdma_drive_machine(struct ibv_wc *wc) {
-    conn *c = hashtable_search(qp_hash, wc->qp_num);
+rdma_drive_machine(struct ibv_wc *wc, conn *c) {
     struct ibv_mr *mr = (struct ibv_mr*)(uintptr_t)wc->wr_id;
 
     if (settings.verbose > 2) {
@@ -6663,7 +6634,7 @@ rdma_conn_free(conn *c) {
     if (!c) return;
     int i = 0;
 
-    hashtable_delete(qp_hash, c->id->qp->qp_num);
+    hashtable_delete(c->thread->qp_hash, c->id->qp->qp_num);
 
     if (c->send_mr && 0 != rdma_dereg_mr(c->send_mr)) {
         perror("rdma_dereg_mr() in rdma_conn_free()");
@@ -6676,7 +6647,7 @@ rdma_conn_free(conn *c) {
         }
     }
     if (c->rbuf_list) {
-        for (i = 0; i < rdma_context.buff_per_conn; ++i) if (c->rmr_list[i]) {
+        for (i = 0; i < rdma_context.buff_per_thread; ++i) if (c->rmr_list[i]) {
             if (0 != rdma_dereg_mr(c->rmr_list[i])) {
                 perror("rdma_dereg_mr() in rdma_conn_free()");
             }
@@ -6708,7 +6679,7 @@ rdma_conn_free(conn *c) {
         free(c->wc_ctx_list);
 
     if (c->rbuf_list) {
-        for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+        for (i = 0; i < rdma_context.buff_per_thread; ++i) {
             free(c->rbuf_list[i]);
         }
         free(c->rbuf_list);

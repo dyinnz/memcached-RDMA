@@ -880,6 +880,11 @@ dispatch_rdma_conn(conn *cm_ctx) {
  ******************************************************************************/
 static int
 init_rdma_thread_resources(LIBEVENT_THREAD *me) {
+    if ( !(me->qp_hash = hashtable_create(settings.maxconns)) ) {
+        fprintf(stderr, "create hash table error\n");
+        return -1;
+    }
+
     if ( !(me->comp_channel = ibv_create_comp_channel(rdma_context.device_ctx_used)) ) {
         perror("ibv_create_comp_channel()");
         return -1;
@@ -929,18 +934,19 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
     }
 
     me->rsize = DATA_BUFFER_SIZE;
-    me->rbuf_list = calloc(rdma_context.buff_per_conn, sizeof(char *));
-    me->rmr_list = calloc(rdma_context.buff_per_conn, sizeof(struct ibv_mr*));
-    me->rwr_list = calloc(rdma_context.buff_per_conn, sizeof(struct ibv_recv_wr));
-    me->rsglist = calloc(rdma_context.buff_per_conn, sizeof(struct ibv_sge));
+    me->rbuf_list = calloc(rdma_context.buff_per_thread, sizeof(char *));
+    me->rmr_list = calloc(rdma_context.buff_per_thread, sizeof(struct ibv_mr*));
+    me->rwr_list = calloc(rdma_context.buff_per_thread, sizeof(struct ibv_recv_wr));
+    me->rsglist = calloc(rdma_context.buff_per_thread, sizeof(struct ibv_sge));
+    me->poll_wc = calloc(rdma_context.poll_wc_size, sizeof(struct ibv_wc));
     int i = 0;
-    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+    for (i = 0; i < rdma_context.buff_per_thread; ++i) {
         me->rbuf_list[i] = malloc(me->rsize);
         if (me->rbuf_list[i] == 0) {
             break;
         }
     }
-    if (i != rdma_context.buff_per_conn) {
+    if (i != rdma_context.buff_per_thread) {
         int j = 0;
         for (j = 0; j < i; ++j) {
             free(me->rbuf_list[j]);
@@ -954,7 +960,7 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
     }
 
     struct ibv_recv_wr *bad = NULL;
-    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+    for (i = 0; i < rdma_context.buff_per_thread; ++i) {
         me->rmr_list[i] = ibv_reg_mr(me->pd, me->rbuf_list[i], me->rsize, IBV_ACCESS_LOCAL_WRITE);
 
         me->rsglist[i].addr = (uintptr_t)me->rbuf_list[i];
