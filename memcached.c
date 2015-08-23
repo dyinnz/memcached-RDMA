@@ -6051,6 +6051,9 @@ rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
                     c->total_recv_msg, c->total_post_recv, c->total_cqe);
 
             rdma_ack_cm_event(cm_event);
+            rdma_conn_cleanup(c);
+            rdma_conn_free(c);
+            printf("free conn %p\n\n", (void*)c);
             rdma_destroy_qp(id);
             rdma_destroy_id(id);
             return;     /* return early due to ack cm event */
@@ -6167,6 +6170,7 @@ handle_connect_request(struct rdma_cm_id *id) {
     id->context = c;
 
     assign_conn_to_thread(c);
+    printf("rdma_conn_new %p, thread %p\n", (void*)c, (void*)c->thread);
         
     if (0 != preamble_qp(c)) {
         return -1;
@@ -6194,6 +6198,8 @@ handle_connect_request(struct rdma_cm_id *id) {
         return -1;
     }
     id->srq = c->srq;
+
+    printf("id's qp [%p], qp num [%d]\n", (void*)id->qp, id->qp->qp_num);
 
     if (0 != rdma_accept(id, NULL)) {
         perror("rdma_accept()");
@@ -6338,6 +6344,7 @@ rdma_conn_init(conn *c, enum conn_states init_state,
     }
     c->total_post_recv += rdma_context.buff_per_conn;
 
+    printf("%s\n", __func__);
     return 0;
 }
 
@@ -6349,7 +6356,8 @@ rdma_drive_machine(struct ibv_wc *wc) {
     struct wc_context *wc_ctx = (struct wc_context *)(uintptr_t)wc->wr_id; 
     struct ibv_mr *mr = wc_ctx->mr;
     conn   *c = wc_ctx->c;
-    c->total_cqe += 1;
+
+    printf("qp num in wc [%d]\n", wc->qp_num);
 
     c->total_cqe += 1;
     /* int     nreqs = settings.reqs_per_event; */
@@ -6358,7 +6366,9 @@ rdma_drive_machine(struct ibv_wc *wc) {
     bool    stop = false; 
 
     if (IBV_WC_SUCCESS != wc->status) {
-        printf("Bad wc\n");
+        printf("bad wc: %d\n", (int)wc->status);
+        rdma_disconnect(c->id);
+        return;
     }
 
     while (!stop) {
@@ -6373,7 +6383,6 @@ rdma_drive_machine(struct ibv_wc *wc) {
             /* RDMA TODO: handle these event */
             switch (wc->opcode) {
                 case IBV_WC_SEND:
-                    printf("test\n");
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
                         if(c->protocol == binary_prot) {
@@ -6515,8 +6524,8 @@ rdma_drive_machine(struct ibv_wc *wc) {
             break;
 
         case conn_closing:
+            printf("test conn_closing\n");
             rdma_disconnect(c->id);
-            rdma_conn_cleanup(c);
             stop = true;
             break;
 
@@ -6618,16 +6627,21 @@ rdma_conn_free(conn *c) {
     if (!c) return;
     int i = 0;
 
-    if (c->send_mr)
-        rdma_dereg_mr(c->send_mr);
+    if (c->send_mr && 0 != rdma_dereg_mr(c->send_mr)) {
+        perror("rdma_dereg_mr() in rdma_conn_free()");
+    }
     if (c->mr_list) {
         for (i = 0; i < c->mr_used; ++i) if (c->mr_list[i]) {
-            rdma_dereg_mr(c->mr_list[i]);
+            if (0 != rdma_dereg_mr(c->mr_list[i])) {
+                perror("rdma_dereg_mr() in rdma_conn_free()");
+            }
         }
     }
     if (c->rbuf_list) {
         for (i = 0; i < rdma_context.buff_per_conn; ++i) if (c->rmr_list[i]) {
-            rdma_dereg_mr(c->rmr_list[i]);
+            if (0 != rdma_dereg_mr(c->rmr_list[i])) {
+                perror("rdma_dereg_mr() in rdma_conn_free()");
+            }
         }
     }
 
