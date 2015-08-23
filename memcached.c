@@ -5284,8 +5284,12 @@ int main (int argc, char **argv) {
           "F"   /* Disable flush_all */
           "o:"  /* Extended generic options */
           "Y:"  /* buff per thread */
+          "Z:"  /* poll wc size */
         ))) {
         switch (c) {
+        case 'Z':
+            rdma_context.poll_wc_size = atoi(optarg);
+            break;
         case 'Y':
             rdma_context.buff_per_thread = atoi(optarg);
             break;
@@ -6331,13 +6335,13 @@ rdma_conn_init(conn *c, enum conn_states init_state,
         return -1;
     }
 
-    /*
     // RDMA TODO: handle error 
     if ( !(c->send_mr = rdma_reg_msgs(c->id, c->wbuf, c->wsize)) ) {
         perror("rdma_reg_msgs()");
         return -1;
     }
 
+    /*
     int i = 0;
     for (i = 0; i < rdma_context.buff_per_thread; ++i) {
         // RDMA TODO: notice the size, allocate a size list?
