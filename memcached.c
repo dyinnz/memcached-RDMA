@@ -6113,11 +6113,12 @@ rdma_conn_new() {
 
     c->sge_size = IOV_LIST_INITIAL;
     c->sge = malloc(sizeof(struct ibv_sge) * c->sge_size);
-    c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_thread);
-
     c->mr_list = calloc(c->sge_size, sizeof(struct ibv_mr*));
+
+    /*
     c->rmr_list = calloc(rdma_context.buff_per_thread, sizeof(struct ibv_mr*));
     c->rbuf_list = calloc(rdma_context.buff_per_thread, sizeof(char *));
+    c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_thread);
 
     int i = 0;
     for (i = 0; i < rdma_context.buff_per_thread; ++i) {
@@ -6134,11 +6135,12 @@ rdma_conn_new() {
         free(c->rbuf_list);
         c->rbuf_list = 0;
     }
+    */
 
 /*    if (c->rbuf == 0 || c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
             c->msglist == 0 || c->suffixlist == 0) { */
     if (c->wbuf == 0 || c->ilist == 0 || c->iov == 0 || c->msglist == 0 || c->suffixlist == 0 ||
-        c->sge == 0 || c->mr_list == 0 || c->rmr_list == 0 || c->rbuf_list == 0 || c->wc_ctx_list == 0) {
+        c->sge == 0 || c->mr_list == 0) {
         /* RDMA free */
         rdma_conn_free(c);
         STATS_LOCK();
@@ -6518,13 +6520,9 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
         case conn_mwrite:
             c->write_state = c->state;
 
-            c->send_wc_ctx.mr = c->send_mr;
-            c->send_wc_ctx.c = c;
-            //printf("read to post send\n");
-            if (0 != rdma_post_sendv(c->id, &c->send_wc_ctx, c->sge, c->sge_used, 0)) {
+            if (0 != rdma_post_sendv(c->id, c->send_mr, c->sge, c->sge_used, 0)) {
                 conn_set_state(c, conn_closing);
             } else {
-             //   printf("post send ok\n");
                 conn_set_state(c, conn_waiting);
                 stop = true;
             }
@@ -6646,13 +6644,6 @@ rdma_conn_free(conn *c) {
             }
         }
     }
-    if (c->rbuf_list) {
-        for (i = 0; i < rdma_context.buff_per_thread; ++i) if (c->rmr_list[i]) {
-            if (0 != rdma_dereg_mr(c->rmr_list[i])) {
-                perror("rdma_dereg_mr() in rdma_conn_free()");
-            }
-        }
-    }
 
     if (c->hdrbuf)
         free(c->hdrbuf);
@@ -6673,17 +6664,6 @@ rdma_conn_free(conn *c) {
         free(c->sge);
     if (c->mr_list)
         free(c->mr_list);
-    if (c->rmr_list)
-        free(c->rmr_list);
-    if (c->wc_ctx_list)
-        free(c->wc_ctx_list);
-
-    if (c->rbuf_list) {
-        for (i = 0; i < rdma_context.buff_per_thread; ++i) {
-            free(c->rbuf_list[i]);
-        }
-        free(c->rbuf_list);
-    }
 
     free(c);
 }

@@ -459,12 +459,7 @@ struct conn {
     struct ibv_srq              *srq;
 
     /* unique */
-    char                        **rbuf_list;
-    struct ibv_mr               **rmr_list;
-    struct wc_context           *wc_ctx_list;
-
     struct ibv_mr               *send_mr;
-    struct wc_context           send_wc_ctx;
     struct ibv_mr               *recv_mr;
 
     struct ibv_sge              *sge;
