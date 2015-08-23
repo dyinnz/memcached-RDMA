@@ -412,12 +412,18 @@ typedef struct {
     cache_t *suffix_cache;      /* suffix cache */
 
     /* RDMA PART */
-    int                         ack_events;
+    size_t                      ack_events;
     struct ibv_comp_channel     *comp_channel;
     struct ibv_pd               *pd;
     struct ibv_cq               *cq;
     struct ibv_srq              *srq;
     struct event                poll_event;
+
+    size_t                      rsize;
+    char                        **rbuf_list;
+    struct ibv_mr               **rmr_list;
+    struct ibv_sge              *rsglist;
+    struct ibv_recv_wr          *rwr_list;
 } LIBEVENT_THREAD;
 
 typedef struct {

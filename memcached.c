@@ -6351,7 +6351,8 @@ rdma_conn_init(conn *c, enum conn_states init_state,
     c->sge_used = 0;
     c->mr_used = 0;
        
-    /* RDMA TODO: handle error */
+    /*
+    // RDMA TODO: handle error 
     if ( !(c->send_mr = rdma_reg_msgs(c->id, c->wbuf, c->wsize)) ) {
         perror("rdma_reg_msgs()");
         return -1;
@@ -6359,7 +6360,7 @@ rdma_conn_init(conn *c, enum conn_states init_state,
 
     int i = 0;
     for (i = 0; i < rdma_context.buff_per_conn; ++i) {
-        /* RDMA TODO: notice the size, allocate a size list? */
+        // RDMA TODO: notice the size, allocate a size list?
         if ( !(c->rmr_list[i] = rdma_reg_msgs(c->id, c->rbuf_list[i], c->rsize)) ) {
             perror("register recv buff, rdma_reg_msgs()");
             return -1;
@@ -6372,8 +6373,7 @@ rdma_conn_init(conn *c, enum conn_states init_state,
         }
     }
     c->total_post_recv += rdma_context.buff_per_conn;
-
-    printf("%s\n", __func__);
+    */
     return 0;
 }
 
@@ -6382,25 +6382,22 @@ rdma_conn_init(conn *c, enum conn_states init_state,
  ******************************************************************************/
 static void
 rdma_drive_machine(struct ibv_wc *wc) {
-    struct wc_context *wc_ctx = (struct wc_context *)(uintptr_t)wc->wr_id; 
-    struct ibv_mr *mr = wc_ctx->mr;
-    conn   *c = wc_ctx->c;
+    conn *c = hashtable_search(qp_hash, wc->qp_num);
+    struct ibv_mr *mr = (struct ibv_mr*)(uintptr_t)wc->wr_id;
 
     printf("qp num in wc [%d]\n", wc->qp_num);
-    conn *tc = hashtable_search(qp_hash, wc->qp_num);
-    printf("c: %p, %p\n", (void*)c, (void*)tc);
-
     c->total_cqe += 1;
-    /* int     nreqs = settings.reqs_per_event; */
-    /* because of there must be only one request per event, so set it to 1. */
-    int     nreqs = 1;
-    bool    stop = false; 
 
     if (IBV_WC_SUCCESS != wc->status) {
         printf("bad wc: %d\n", (int)wc->status);
         rdma_disconnect(c->id);
         return;
     }
+
+    /* int     nreqs = settings.reqs_per_event; */
+    /* because of there must be only one request per event, so set it to 1. */
+    int     nreqs = 1;
+    bool    stop = false; 
 
     while (!stop) {
         switch (c->state) {
@@ -6567,7 +6564,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
             }
 
             /* post a recv again to recv new message */
-            if (0 != rdma_post_recv(c->id, wc_ctx, mr->addr, mr->length, mr)) {
+            if (0 != rdma_post_recv(c->id, mr, mr->addr, mr->length, mr)) {
                 if (settings.verbose > 0) {
                     perror("rdma_post_recv()");
                 }

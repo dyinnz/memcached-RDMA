@@ -928,6 +928,50 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
         return -1;
     }
 
+    me->rsize = DATA_BUFFER_SIZE;
+    me->rbuf_list = calloc(rdma_context.buff_per_conn, sizeof(char *));
+    me->rmr_list = calloc(rdma_context.buff_per_conn, sizeof(struct ibv_mr*));
+    me->rwr_list = calloc(rdma_context.buff_per_conn, sizeof(struct ibv_recv_wr));
+    me->rsglist = calloc(rdma_context.buff_per_conn, sizeof(struct ibv_sge));
+    int i = 0;
+    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+        me->rbuf_list[i] = malloc(me->rsize);
+        if (me->rbuf_list[i] == 0) {
+            break;
+        }
+    }
+    if (i != rdma_context.buff_per_conn) {
+        int j = 0;
+        for (j = 0; j < i; ++j) {
+            free(me->rbuf_list[j]);
+        }
+        free(me->rbuf_list);
+        me->rbuf_list = 0;
+    }
+    if (!me->rmr_list || !me->rbuf_list) {
+        fprintf(stderr, "out of memory in init_rdma_thread_resources()\n");
+        return -1;
+    }
+
+    struct ibv_recv_wr *bad = NULL;
+    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+        me->rmr_list[i] = ibv_reg_mr(me->pd, me->rbuf_list[i], me->rsize, IBV_ACCESS_LOCAL_WRITE);
+
+        me->rsglist[i].addr = (uintptr_t)me->rbuf_list[i];
+        me->rsglist[i].length = me->rsize;
+        me->rsglist[i].lkey = me->rmr_list[i]->lkey;
+
+        me->rwr_list[i].wr_id = (uintptr_t)me->rmr_list[i];
+        me->rwr_list[i].next = NULL;
+        me->rwr_list[i].sg_list = &me->rsglist[i];
+        me->rwr_list[i].num_sge = 1;
+
+        if (0 != ibv_post_srq_recv(me->srq, &me->rwr_list[i], &bad)) {
+            perror("ibv_post_srq_recv()");
+            return -1;
+        }
+    }
+
     return 0;
 }
 
