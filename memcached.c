@@ -68,20 +68,22 @@ enum rdma_transport {
 
 struct rdma_context rdma_context;
 
-static void rdma_cm_event_handler(int fd, short libevent_event, void *arg);
-static int attach_rdma_listen_event();
 static int init_rdma_resources();
 static void rdma_release_resources();
 static int rdma_build_single();
 static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file);
-static int handle_connect_request(struct rdma_cm_id *id);
+static void rdma_cm_event_handler(int fd, short libevent_event, void *arg);
+static int attach_rdma_listen_event();
 static int preamble_qp(conn *c);
-static void rdma_release_conn(struct rdma_cm_id *id);
+static int handle_connect_request(struct rdma_cm_id *id);
 static void rdma_drive_machine(struct ibv_wc *wc);
 static int resize_recv_buff(conn *c);
 static int rdma_add_sge(conn *c, const void *buf, int len);
+
 static conn* rdma_conn_new();
- 
+static void rdma_conn_cleanup(conn *c); 
+static void rdma_conn_free(conn *c);
+
 /*
  * forward declarations
  */
@@ -758,6 +760,10 @@ rdma_add_sge(conn *c, const void *buf, int len) {
         c->sge[c->sge_used].lkey = c->send_mr->lkey; /* RDMA TODO 1 */
 
     } else {
+        if (c->mr_used == c->sge_size) {
+            return -1;
+        }
+
         struct ibv_mr *mr = rdma_reg_msgs(c->id, (void*)buf, len);
         if (!mr) {
             return -1;
@@ -6021,17 +6027,16 @@ rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file) {
  ******************************************************************************/
 static void 
 rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
-    struct rdma_cm_event    *cm_event = NULL;
-    struct rdma_cm_id       *id = NULL;
-    conn       *c = NULL;
 
+    struct rdma_cm_event    *cm_event = NULL;
     if (0 != rdma_get_cm_event(rdma_context.cm_channel, &cm_event)) {
         perror("rdma_get_cm_event()");
         return;
     }
     printf("RDMA CM event: %s\n", rdma_event_str(cm_event->event));
-    id = cm_event->id;
-    c = id->context;
+
+    struct rdma_cm_id *id = cm_event->id;
+    conn *c = id->context;
 
     switch (cm_event->event) {
         case RDMA_CM_EVENT_CONNECT_REQUEST:
@@ -6046,7 +6051,8 @@ rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
                     c->total_recv_msg, c->total_post_recv, c->total_cqe);
 
             rdma_ack_cm_event(cm_event);
-            rdma_release_conn(id);
+            rdma_destroy_qp(id);
+            rdma_destroy_id(id);
             return;     /* return early due to ack cm event */
 
         default:
@@ -6054,9 +6060,7 @@ rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
             break;
     }
 
-    if (RDMA_CM_EVENT_DISCONNECTED != cm_event->event) {
-        rdma_ack_cm_event(cm_event);
-    }
+    rdma_ack_cm_event(cm_event);
 }
 
 /***************************************************************************//**
@@ -6100,12 +6104,34 @@ rdma_conn_new() {
 
     c->sge_size = IOV_LIST_INITIAL;
     c->sge = malloc(sizeof(struct ibv_sge) * c->sge_size);
-    c->mr_list = malloc(sizeof(struct ibv_mr*) * c->sge_size);
+    c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_conn);
 
-    if (/*c->rbuf == 0 ||*/ c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
-            c->msglist == 0 || c->suffixlist == 0) {
+    c->mr_list = calloc(c->sge_size, sizeof(struct ibv_mr*));
+    c->rmr_list = calloc(rdma_context.buff_per_conn, sizeof(struct ibv_mr*));
+    c->rbuf_list = calloc(rdma_context.buff_per_conn, sizeof(char *));
+
+    int i = 0;
+    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+        c->rbuf_list[i] = malloc(c->rsize);
+        if (c->rbuf_list[i] == 0) {
+            break;
+        }
+    }
+    if (i != rdma_context.buff_per_conn) {
+        int j = 0;
+        for (j = 0; j < i; ++j) {
+            free(c->rbuf_list[j]);
+        }
+        free(c->rbuf_list);
+        c->rbuf_list = 0;
+    }
+
+/*    if (c->rbuf == 0 || c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
+            c->msglist == 0 || c->suffixlist == 0) { */
+    if (c->wbuf == 0 || c->ilist == 0 || c->iov == 0 || c->msglist == 0 || c->suffixlist == 0 ||
+        c->sge == 0 || c->mr_list == 0 || c->rmr_list == 0 || c->rbuf_list == 0 || c->wc_ctx_list == 0) {
         /* RDMA free */
-        /* conn_free(c); */
+        rdma_conn_free(c);
         STATS_LOCK();
         stats.malloc_fails++;
         STATS_UNLOCK();
@@ -6122,14 +6148,6 @@ rdma_conn_new() {
     /* don't use sfd, set it as 0 */
     c->sfd = 0;
     /* conns[sfd] = c; */
-
-    c->rmr_list = malloc(sizeof(struct ibv_mr*) * rdma_context.buff_per_conn);
-    c->rbuf_list = malloc(sizeof(char *) * rdma_context.buff_per_conn);
-    c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_conn);
-    int i = 0;
-    for (i = 0; i < rdma_context.buff_per_conn; ++i) {
-        c->rbuf_list[i] = malloc(c->rsize);
-    }
 
     return c;
 }
@@ -6208,46 +6226,6 @@ preamble_qp(conn *c) {
     c->srq = c->thread->srq;
 
     return 0;
-}
-
-/***************************************************************************//**
- * Release relative resources and disconnect this id
- *
- ******************************************************************************/
-static void 
-rdma_release_conn(struct rdma_cm_id *id) {
-    conn    *c = id->context;
-    int     i = 0; 
-
-    if (c->recv_mr) rdma_dereg_mr(c->recv_mr);
-    if (c->rbuf) {
-        free(c->rbuf);
-        c->rbuf = NULL;
-    }
-
-    if (c->send_mr) rdma_dereg_mr(c->send_mr);
-    if (c->wbuf) {
-        free(c->wbuf);
-        c->wbuf = NULL;
-    }
-    
-    if (c->sge) {
-        free(c->sge);
-        c->sge = NULL;
-    }
-
-    if (c->mr_list) {
-        for (i = 0; i < c->mr_used; ++i) {
-            rdma_dereg_mr(c->mr_list[i]);
-            c->mr_used = 0;
-        }
-        c->mr_list = 0;
-    }
-
-    free(c);
-
-    rdma_destroy_qp(id);
-    rdma_destroy_id(id);
 }
 
 /***************************************************************************//**
@@ -6338,6 +6316,7 @@ rdma_conn_init(conn *c, enum conn_states init_state,
     c->sge_used = 0;
     c->mr_used = 0;
        
+    /* RDMA TODO: handle error */
     if ( !(c->send_mr = rdma_reg_msgs(c->id, c->wbuf, c->wsize)) ) {
         perror("rdma_reg_msgs()");
         return -1;
@@ -6537,6 +6516,7 @@ rdma_drive_machine(struct ibv_wc *wc) {
 
         case conn_closing:
             rdma_disconnect(c->id);
+            rdma_conn_cleanup(c);
             stop = true;
             break;
 
@@ -6599,4 +6579,89 @@ resize_recv_buff(conn *c) {
     return 0;
 }
 
+
+/***************************************************************************//**
+ * clean up conn resources
+ *
+ ******************************************************************************/
+static void
+rdma_conn_cleanup(conn *c) {
+
+    conn_release_items(c);
+
+    if (c->write_and_free) {
+        free(c->write_and_free);
+        c->write_and_free = 0;
+    }
+
+    if (c->sasl_conn) {
+        assert(settings.sasl);
+        sasl_dispose(&c->sasl_conn);
+        c->sasl_conn = NULL;
+    }
+
+    pthread_mutex_lock(&conn_lock);
+    allow_new_conns = true;
+    pthread_mutex_unlock(&conn_lock);
+
+    STATS_LOCK();
+    stats.curr_conns--;
+    STATS_UNLOCK();
+}
+
+/***************************************************************************//**
+ * free conn
+ *
+ ******************************************************************************/ 
+static void
+rdma_conn_free(conn *c) {
+    if (!c) return;
+    int i = 0;
+
+    if (c->send_mr)
+        rdma_dereg_mr(c->send_mr);
+    if (c->mr_list) {
+        for (i = 0; i < c->mr_used; ++i) if (c->mr_list[i]) {
+            rdma_dereg_mr(c->mr_list[i]);
+        }
+    }
+    if (c->rbuf_list) {
+        for (i = 0; i < rdma_context.buff_per_conn; ++i) if (c->rmr_list[i]) {
+            rdma_dereg_mr(c->rmr_list[i]);
+        }
+    }
+
+    if (c->hdrbuf)
+        free(c->hdrbuf);
+    if (c->msglist)
+        free(c->msglist);
+    /* if (c->rbuf)
+        free(c->rbuf); */
+    if (c->wbuf)
+        free(c->wbuf);
+    if (c->ilist)
+        free(c->ilist);
+    if (c->suffixlist)
+        free(c->suffixlist);
+    if (c->iov)
+        free(c->iov);
+
+    if (c->sge)
+        free(c->sge);
+    if (c->mr_list)
+        free(c->mr_list);
+    if (c->rmr_list)
+        free(c->rmr_list);
+    if (c->wc_ctx_list)
+        free(c->wc_ctx_list);
+
+    if (c->rbuf_list) {
+        for (i = 0; i < rdma_context.buff_per_conn; ++i) {
+            free(c->rbuf_list[i]);
+        }
+        free(c->rbuf_list);
+    }
+
+    free(c);
+}
 
