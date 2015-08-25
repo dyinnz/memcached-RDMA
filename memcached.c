@@ -66,13 +66,12 @@ enum rdma_transport {
 
 struct rdma_context rdma_context;
 
-static int init_rdma_resources();
+static int init_rdma_global_resources();
 static void rdma_release_resources();
 static int rdma_build_single();
 static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file);
 static void rdma_cm_event_handler(int fd, short libevent_event, void *arg);
 static int attach_rdma_listen_event();
-static int preamble_qp(conn *c);
 static int handle_connect_request(struct rdma_cm_id *id);
 static void rdma_drive_machine(struct ibv_wc *wc, conn* c);
 static int resize_recv_buff(conn *c);
@@ -274,6 +273,12 @@ static void settings_init(void) {
     settings.tail_repair_time = TAIL_REPAIR_TIME_DEFAULT;
     settings.flush_enabled = true;
     settings.crawls_persleep = 1000;
+
+    rdma_context.srq_size = 1024;
+    rdma_context.cq_size = 1024;
+    rdma_context.buff_per_thread = 128;
+    rdma_context.poll_wc_size = 128 + 5;
+    rdma_context.ack_events = 16;
 }
 
 /*
@@ -5114,17 +5119,7 @@ static bool sanitycheck(void) {
 /***************************************************************************//**
  * init global rdma resources 
  ******************************************************************************/
-static int init_rdma_resources() {
-
-    rdma_context.srq_size = 1024;      /* TODO: temporary number */
-    rdma_context.cq_size = 1024;
-    if (rdma_context.buff_per_thread == 0) {
-        rdma_context.buff_per_thread = 128;
-    }
-    if (rdma_context.poll_wc_size == 0) {
-        rdma_context.poll_wc_size = 128;
-    }
-
+static int init_rdma_global_resources() {
     if ( !(rdma_context.cm_channel = rdma_create_event_channel()) ) {
         perror("rdma_create_event_channel()");
         return -1;
@@ -5751,8 +5746,8 @@ int main (int argc, char **argv) {
         exit(EX_OSERR);
     }
 
-    if (0 !=init_rdma_resources()) {
-        printf("init_rdma_resources failed!\n");
+    if (0 != init_rdma_global_resources()) {
+        fprintf(stderr, "init rdma global resources failed!\n");
         return -1;
     }
     /* start up worker threads if MT mode */
@@ -5869,7 +5864,7 @@ int main (int argc, char **argv) {
     }
 
     if (0 != attach_rdma_listen_event()) {
-        printf("attach_rdma_listen_event ok!\n");
+        fprintf(stderr, "attach_rdma_listen_event failed!\n");
         return -1;
     }
 
@@ -5975,7 +5970,7 @@ rdma_build_single(const char *interface, int port, enum rdma_transport transport
                 return 1;
             }
 
-            printf("rdma_listen on port %d\n", ntohs(rdma_get_src_port(listen_id)));
+            fprintf(stderr, "rdma_listen on port %d\n", ntohs(rdma_get_src_port(listen_id)));
 
             if (NULL != portnumber_file) {
                 fprintf(portnumber_file, "RDMA PS %s: %u\n",
@@ -6037,39 +6032,52 @@ rdma_build(int port, enum rdma_transport transport, FILE *portnumber_file) {
  ******************************************************************************/
 static void 
 rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
-
     struct rdma_cm_event    *cm_event = NULL;
     if (0 != rdma_get_cm_event(rdma_context.cm_channel, &cm_event)) {
         perror("rdma_get_cm_event()");
         return;
     }
-    printf("RDMA CM event: %s\n", rdma_event_str(cm_event->event));
+    if (settings.verbose > 0) {
+        fprintf(stderr, "RDMA CM event: %s\n", rdma_event_str(cm_event->event));
+    }
 
     struct rdma_cm_id *id = cm_event->id;
     conn *c = id->context;
 
     switch (cm_event->event) {
         case RDMA_CM_EVENT_CONNECT_REQUEST:
-            handle_connect_request(cm_event->id);
+            if (stats.curr_conns >= settings.maxconns) {
+                static const char reply[] = "ERROR Too many open connections\r\n";
+                rdma_reject(cm_event->id, reply ,strlen(reply));
+                STATS_LOCK();
+                stats.rejected_conns++;
+                STATS_UNLOCK();
+
+            } else {
+                handle_connect_request(cm_event->id);
+            }
             break;
 
         case RDMA_CM_EVENT_ESTABLISHED:
             break;
 
         case RDMA_CM_EVENT_DISCONNECTED:
-            printf("In this connection: total recv msg: %d, total post recv: %d, total cqe %d\n",
-                    c->total_recv_msg, c->total_post_recv, c->total_cqe);
+            if (settings.verbose > 0) { 
+                fprintf(stderr, "conn %p, recv msg: %d, post recv: %d, cqe %d\n",
+                        (void*)c, c->total_recv_msg, c->total_post_recv, c->total_cqe);
+            }
 
             rdma_ack_cm_event(cm_event);
             rdma_conn_cleanup(c);
             rdma_conn_free(c);
-            printf("free conn %p\n\n", (void*)c);
             rdma_destroy_qp(id);
             rdma_destroy_id(id);
             return;     /* return early due to ack cm event */
 
         default:
-            printf("Unhandled error: %d\n", cm_event->status);
+            if (settings.verbose > 0) {
+                fprintf(stderr, "do not handle this cm event\n");
+            }
             break;
     }
 
@@ -6119,28 +6127,6 @@ rdma_conn_new() {
     c->sge = malloc(sizeof(struct ibv_sge) * c->sge_size);
     c->mr_list = calloc(c->sge_size, sizeof(struct ibv_mr*));
 
-    /*
-    c->rmr_list = calloc(rdma_context.buff_per_thread, sizeof(struct ibv_mr*));
-    c->rbuf_list = calloc(rdma_context.buff_per_thread, sizeof(char *));
-    c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_thread);
-
-    int i = 0;
-    for (i = 0; i < rdma_context.buff_per_thread; ++i) {
-        c->rbuf_list[i] = malloc(c->rsize);
-        if (c->rbuf_list[i] == 0) {
-            break;
-        }
-    }
-    if (i != rdma_context.buff_per_thread) {
-        int j = 0;
-        for (j = 0; j < i; ++j) {
-            free(c->rbuf_list[j]);
-        }
-        free(c->rbuf_list);
-        c->rbuf_list = 0;
-    }
-    */
-
 /*    if (c->rbuf == 0 || c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
             c->msglist == 0 || c->suffixlist == 0) { */
     if (c->wbuf == 0 || c->ilist == 0 || c->iov == 0 || c->msglist == 0 || c->suffixlist == 0 ||
@@ -6180,14 +6166,14 @@ handle_connect_request(struct rdma_cm_id *id) {
 
     c->id  = id; 
     id->context = c;
-
-    assign_conn_to_thread(c);
-    printf("rdma_conn_new %p, thread %p\n", (void*)c, (void*)c->thread);
-        
-    if (0 != preamble_qp(c)) {
+    if (id->verbs != rdma_context.device_ctx_used) {
+        fprintf(stderr, "unmatched device context\n");
+        rdma_conn_free(c);
         return -1;
     }
 
+    assign_conn_to_thread(c);
+    
     /* TODO: adjust the parameters */
     struct ibv_qp_init_attr init_qp_attr;
     memset(&init_qp_attr, 0, sizeof(init_qp_attr));
@@ -6207,41 +6193,25 @@ handle_connect_request(struct rdma_cm_id *id) {
     init_qp_attr.srq = c->srq;
     if (0 != rdma_create_qp(id, c->pd, &init_qp_attr)) {
         perror("rdma_create_qp()");
+        rdma_conn_free(c);
         return -1;
     }
     id->srq = c->srq;
 
-    printf("id's qp [%p], qp num [%d]\n", (void*)id->qp, id->qp->qp_num);
+    if (settings.verbose > 2) {
+        fprintf(stderr, "id's qp [%p], qp num [%d]\n", (void*)id->qp, id->qp->qp_num);
+    }
+
     if (0 != rdma_accept(id, NULL)) {
         perror("rdma_accept()");
+        rdma_conn_free(c);
         return -1;
     }
     if (settings.verbose > 0) {
-        printf("Accept new connection [%p].\n", (void*)id);
+        fprintf(stderr, "Accept new connection [%p].\n", (void*)id);
     }
 
     dispatch_rdma_conn(c);
-    return 0;
-}
-
-/***************************************************************************//**
- * Prepare complete channel, protection domain, compelete queue for queue pair
- *
- ******************************************************************************/
-static int 
-preamble_qp(conn *c) {
-    assert(c->thread);
-
-    if (c->id->verbs != rdma_context.device_ctx_used) {
-        fprintf(stderr, "Unmatched device context\n");
-        return -1;
-    }
-
-    c->comp_channel = c->thread->comp_channel;
-    c->pd = c->thread->pd;
-    c->cq = c->thread->cq;
-    c->srq = c->thread->srq;
-
     return 0;
 }
 
@@ -6252,44 +6222,38 @@ preamble_qp(conn *c) {
 void 
 cc_poll_event_handler(int fd, short libevent_event, void *arg) {
     LIBEVENT_THREAD *me = arg;
-    struct ibv_cq *cq = NULL;
-    int cqe = 0, i = 0;
-    void *null = NULL; 
 
+    /* get async event */
+    struct ibv_cq *cq = NULL;
+    void *null = NULL; 
     if (0 != ibv_get_cq_event(me->comp_channel, &cq, &null)) {
         perror("ibv_get_cq_event()");
         return;
     }
     
-    /* RDMA TODO: adjust ack_events */
-    if (++(me->ack_events) == 8) {
-        ibv_ack_cq_events(cq, 8);
+    if (++(me->ack_events) == rdma_context.ack_events) {
+        ibv_ack_cq_events(cq, me->ack_events);
         me->ack_events = 0;
     }
-
     if (0 != ibv_req_notify_cq(cq, 0)) {
         perror("ibv_reg_notify_cq()");
         return;
     }
 
-    cqe = ibv_poll_cq(cq, rdma_context.poll_wc_size, me->poll_wc);
-    if (settings.verbose > 1 && rdma_context.poll_wc_size == cqe) {
-        printf("get cqe: %d\n", cqe);
-    }
-    if (cqe < 0) {
-        perror("ibv_poll_cq()");
-        return;
-    }
+    /* poll complete queue */
+    int cqe = 0, i = 0;
+    do {
+        if ( (cqe = ibv_poll_cq(cq, rdma_context.poll_wc_size, me->poll_wc)) < 0) {
+            perror("ibv_poll_cq()");
+            return;
+        }
 
-    if (settings.verbose > 2 && cqe > 1) {
-        printf("Get more than one cqe: %d\n", cqe);
-    }
-
-    conn *c = NULL;
-    for (i = 0; i < cqe; ++i) {
-        c = hashtable_search(me->qp_hash, me->poll_wc[i].qp_num);
-        rdma_drive_machine(me->poll_wc + i, c);
-    }
+        conn *c = NULL;
+        for (i = 0; i < cqe; ++i) {
+            c = hashtable_search(me->qp_hash, me->poll_wc[i].qp_num);
+            rdma_drive_machine(me->poll_wc + i, c);
+        }
+    } while (cqe == rdma_context.poll_wc_size);
 }
 
 /***************************************************************************//**
@@ -6341,23 +6305,6 @@ rdma_conn_init(conn *c, enum conn_states init_state,
         return -1;
     }
 
-    /*
-    int i = 0;
-    for (i = 0; i < rdma_context.buff_per_thread; ++i) {
-        // RDMA TODO: notice the size, allocate a size list?
-        if ( !(c->rmr_list[i] = rdma_reg_msgs(c->id, c->rbuf_list[i], c->rsize)) ) {
-            perror("register recv buff, rdma_reg_msgs()");
-            return -1;
-        }
-        c->wc_ctx_list[i].c = c;
-        c->wc_ctx_list[i].mr = c->rmr_list[i];
-        if (0 != rdma_post_recv(c->id, &c->wc_ctx_list[i], c->rbuf_list[i], c->rsize, c->rmr_list[i])) {
-            perror("rdma_post_recv()");
-            return -1;
-        }
-    }
-    c->total_post_recv += rdma_context.buff_per_thread;
-    */
     return 0;
 }
 
@@ -6369,12 +6316,14 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
     struct ibv_mr *mr = (struct ibv_mr*)(uintptr_t)wc->wr_id;
 
     if (settings.verbose > 2) {
-        printf("qp num in wc [%d]\n", wc->qp_num);
+        fprintf(stderr, "qp num in wc: %d\n", wc->qp_num);
     }
     c->total_cqe += 1;
 
     if (IBV_WC_SUCCESS != wc->status) {
-        printf("bad wc: %d\n", (int)wc->status);
+        if (settings.verbose > 2) {
+            fprintf(stderr, "bad wc [%d]\n", (int)wc->status);
+        }
         rdma_disconnect(c->id);
         return;
     }
@@ -6388,13 +6337,14 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
         switch (c->state) {
 
         case conn_waiting:
+            /* have recieved data */
             if (IBV_WC_RECV & wc->opcode) {
                 conn_set_state(c, conn_read);
                 break;
             }
 
-            /* RDMA TODO: handle these event */
             switch (wc->opcode) {
+                /* have written data */
                 case IBV_WC_SEND:
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
@@ -6428,30 +6378,26 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
 
         case conn_read:
             if (IBV_WC_LOC_LEN_ERR == wc->status) {
-                if (0 != resize_recv_buff(c)) {
-                    conn_set_state(c, conn_closing);
-                    break;
-                } else {
-                    conn_set_state(c, conn_waiting);
-                    stop = true;
-                    break;
-                }
+                conn_set_state(c, conn_closing);
+                break;
 
             } else if (IBV_WC_SUCCESS != wc->status) {
+                /* RDMA TODO: do not execute! */
                 if (settings.verbose > 0) {
-                    printf("id[%p] recv bad wc! status [%d]", (void*)c->id, wc->status);
+                    fprintf(stderr, "id[%p] recv bad wc! status [%d]", (void*)c->id, wc->status);
                 } 
                 conn_set_state(c, conn_closing);
                 break;
+
             } else {
                 c->rbuf = mr->addr;
                 c->rcurr = c->rbuf;
                 c->rbytes = wc->byte_len;
 
                 c->total_recv_msg += 1;
-                if ((settings.verbose > 0 && c->total_recv_msg % 1000 == 0) || settings.verbose > 2) {
-                    printf("[total recv_msg %d, total post recv %d]\n%s\n", 
-                            c->total_recv_msg, c->total_post_recv, (char*)c->rbuf);
+                if ((settings.verbose > 1 && c->total_recv_msg % 10000 == 0) || settings.verbose > 2) {
+                    fprintf(stderr, "%p recv_msg %d, post recv %d:\n%s\n", 
+                            (void*)c, c->total_recv_msg, c->total_post_recv, (char*)c->rbuf);
                 }
 
                 conn_set_state(c, conn_parse_cmd);
@@ -6462,17 +6408,16 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
             break;
 
         case conn_new_cmd:
-            /* TODO: avoid starving other connection */
             nreqs--;
             if (nreqs >= 0) {
                 /* do nothing */
                 if (settings.verbose > 2) {
-                    printf("continue reading new command\n");
+                    fprintf(stderr, "continue reading new command\n");
                 }
                 conn_set_state(c, conn_waiting);
             } else {
                 if (settings.verbose > 2) {
-                    printf("stop reading new command\n");
+                    fprintf(stderr, "stop reading new command\n");
                 }
                 stop = true;
             }
@@ -6533,7 +6478,6 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
             break;
 
         case conn_closing:
-            printf("test conn_closing\n");
             rdma_disconnect(c->id);
             stop = true;
             break;
@@ -6569,6 +6513,8 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
  ******************************************************************************/
 static int 
 resize_recv_buff(conn *c) {
+    return -1;
+
     if (0 != rdma_dereg_mr(c->recv_mr)) {
         perror("rdma_dereg_mr()");
         return -1;

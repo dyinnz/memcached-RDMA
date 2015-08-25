@@ -841,6 +841,15 @@ assign_conn_to_thread(conn *c) {
     int tid = (last_thread + 1) % settings.num_threads;
     last_thread = tid;
     c->thread = threads + tid;
+
+    if (settings.verbose > 1) {
+        fprintf(stderr, "conn %p is assgined to thread %p\n", (void*)c, (void*)c->thread);
+    }
+
+    c->comp_channel = c->thread->comp_channel;
+    c->pd = c->thread->pd;
+    c->cq = c->thread->cq;
+    c->srq = c->thread->srq;
 }
 
 void

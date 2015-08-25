@@ -698,6 +698,7 @@ struct rdma_context {
     int                         srq_size;
     int                         buff_per_thread;
     int                         poll_wc_size;
+    int                         ack_events;
 };
 extern struct rdma_context rdma_context;
 
