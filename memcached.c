@@ -6356,6 +6356,18 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 case IBV_WC_SEND:
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
+                    
+                        int i = 0;
+                        for (i = 0; i < c->mr_used; ++i) {
+                            if (0 != rdma_dereg_mr(c->mr_list[i])) {
+                                perror("rdma_dereg_mr()");
+                                conn_set_state(c, conn_closing);
+                                break;
+                            }
+                        }
+                        c->mr_used = 0;
+                        c->sge_used = 0;
+
                         if(c->protocol == binary_prot) {
                             conn_set_state(c, c->write_and_go);
                         } else {
@@ -6422,16 +6434,6 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 }
                 conn_set_state(c, conn_waiting);
             } else {
-                /* post a recv again to recv new message */
-                if (0 != rdma_post_recv(c->id, mr, mr->addr, mr->length, mr)) {
-                    if (settings.verbose > 0) {
-                        perror("rdma_post_recv()");
-                    }
-                    conn_set_state(c, conn_closing);
-                    break;
-                }
-                c->total_post_recv += 1;
-
                 if (settings.verbose > 2) {
                     fprintf(stderr, "stop reading new command\n");
                 }
@@ -6468,7 +6470,6 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     c->continue_nread = false;
                     break;
                 }
-
             } else {
                 /* first check if we have leftovers in the conn_read buffer */
                 if (c->rbytes > 0) {
@@ -6489,11 +6490,10 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 if (c->rcurr != c->rbuf + c->rsize) {
                     conn_set_state(c, conn_closing);
                 }
-                /* wait for next recv */
                 c->continue_nread = true;
-                stop = true;
             }
-
+            /* wait for next recv */
+            stop = true;
             break;
 
         case conn_write:
@@ -6536,6 +6536,17 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
             assert(0);
             break;
         }
+    }
+
+    if (IBV_WC_SUCCESS == wc->status && IBV_WC_SEND & wc->opcode) {
+        /* post a recv again to recv new message */
+        if (0 != rdma_post_recv(c->id, mr, mr->addr, mr->length, mr)) {
+            if (settings.verbose > 0) {
+                perror("rdma_post_recv()");
+            }
+            rdma_disconnect(c->id);
+        }
+        c->total_post_recv += 1;
     }
 }
 
