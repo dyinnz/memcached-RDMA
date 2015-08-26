@@ -74,7 +74,6 @@ static void rdma_cm_event_handler(int fd, short libevent_event, void *arg);
 static int attach_rdma_listen_event();
 static int handle_connect_request(struct rdma_cm_id *id);
 static void rdma_drive_machine(struct ibv_wc *wc, conn* c);
-static int resize_recv_buff(conn *c);
 static int rdma_add_sge(conn *c, const void *buf, int len);
 
 static conn* rdma_conn_new();
@@ -277,6 +276,7 @@ static void settings_init(void) {
     rdma_context.srq_size = 1024;
     rdma_context.cq_size = 1024;
     rdma_context.buff_per_thread = 128;
+    rdma_context.buff_size = 1024 * 16;
     rdma_context.poll_wc_size = 128 + 5;
     rdma_context.ack_events = 16;
 }
@@ -6107,7 +6107,7 @@ rdma_conn_new() {
     c->msglist = 0;
     c->hdrbuf = 0;
 
-    c->rsize = DATA_BUFFER_SIZE;
+    c->rsize = rdma_context.buff_size;
     c->wsize = DATA_BUFFER_SIZE;
     c->isize = ITEM_LIST_INITIAL;
     c->suffixsize = SUFFIX_LIST_INITIAL;
@@ -6290,7 +6290,9 @@ rdma_conn_init(conn *c, enum conn_states init_state,
 
     /* c->ev_flags = event_flags; */
 
-    /* RDMA PART */
+    /* RDMA PART */   
+    c->continue_nread = false;
+
     c->sge_used = 0;
     c->mr_used = 0;
 
@@ -6390,8 +6392,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 break;
 
             } else {
-                c->rbuf = mr->addr;
-                c->rcurr = c->rbuf;
+                c->rcurr = c->rbuf = mr->addr;
                 c->rbytes = wc->byte_len;
 
                 c->total_recv_msg += 1;
@@ -6403,7 +6404,6 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 conn_set_state(c, conn_parse_cmd);
                 break;
             }
-            
 
             break;
 
@@ -6438,21 +6438,47 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 break;
             }
 
-            /* first check if we have leftovers in the conn_read buffer */
-            if (c->rbytes > 0) {
+            if (c->continue_nread) {
+                c->rcurr = c->rbuf = mr->addr;
+                c->rbytes = wc->byte_len;
+
                 int tocopy = c->rbytes > c->rlbytes ? c->rlbytes : c->rbytes;
-                if (c->ritem != c->rcurr) {
-                    memmove(c->ritem, c->rcurr, tocopy);
-                }
+                memcpy(c->ritem, c->rcurr, tocopy);
                 c->ritem += tocopy;
                 c->rlbytes -= tocopy;
                 c->rcurr += tocopy;
                 c->rbytes -= tocopy;
                 if (c->rlbytes == 0) {
+                    c->continue_nread = false;
                     break;
                 }
+
+            } else {
+                /* first check if we have leftovers in the conn_read buffer */
+                if (c->rbytes > 0) {
+                    int tocopy = c->rbytes > c->rlbytes ? c->rlbytes : c->rbytes;
+                    if (c->ritem != c->rcurr) {
+                        memmove(c->ritem, c->rcurr, tocopy);
+                    }
+                    c->ritem += tocopy;
+                    c->rlbytes -= tocopy;
+                    c->rcurr += tocopy;
+                    c->rbytes -= tocopy;
+                    if (c->rlbytes == 0) {
+                        break;
+                    }
+                }
+                
+                /* all data in rbuf should be copied */
+                if (c->rcurr != c->rbuf + c->rsize) {
+                    conn_set_state(c, conn_closing);
+                }
+                /* wait for next recv */
+                c->continue_nread = true;
+                stop = true;
             }
-            assert(0); /* can't go here */
+
+            break;
 
         case conn_write:
             if (0 == c->sge_used) {
@@ -6506,43 +6532,6 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
         }
     }
 }
-
-/***************************************************************************//**
- * Resize recv buff, factor = 2
- *
- ******************************************************************************/
-static int 
-resize_recv_buff(conn *c) {
-    return -1;
-
-    if (0 != rdma_dereg_mr(c->recv_mr)) {
-        perror("rdma_dereg_mr()");
-        return -1;
-    }
-
-    char *new_rbuf = realloc(c->rbuf, c->rsize * 2);
-    if (!new_rbuf) {
-        perror("realloc(), out of memory");
-        return -1;
-    }
-    c->rcurr = c->rbuf = new_rbuf;
-    c->rsize *= 2;
-
-    assert(0);
-
-    if ( !(c->recv_mr = rdma_reg_msgs(c->id, c->rbuf, c->rsize)) ) {
-        perror("rdma_reg_msgs()");
-        return -1;
-    }
-
-    if (0 != rdma_post_recv(c->id, c, c->rbuf, c->rsize, c->recv_mr)) {
-        perror("rdma_post_recv()");
-        return -1;
-    }
-
-    return 0;
-}
-
 
 /***************************************************************************//**
  * clean up conn resources

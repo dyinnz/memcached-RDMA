@@ -460,7 +460,6 @@ struct conn {
 
     /* unique */
     struct ibv_mr               *send_mr;
-    struct ibv_mr               *recv_mr;
 
     struct ibv_sge              *sge;
     int                         sge_size;
@@ -470,6 +469,8 @@ struct conn {
     int                         mr_used;
 
     enum conn_states            write_state;
+
+    int                         continue_nread;
 
     /* RDMA TODO: do not use now
     struct ibv_send_wr          *sendwr_list;
@@ -697,6 +698,7 @@ struct rdma_context {
     int                         cq_size;
     int                         srq_size;
     int                         buff_per_thread;
+    int                         buff_size;
     int                         poll_wc_size;
     int                         ack_events;
 };

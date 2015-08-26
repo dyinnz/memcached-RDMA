@@ -942,7 +942,7 @@ init_rdma_thread_resources(LIBEVENT_THREAD *me) {
         return -1;
     }
 
-    me->rsize = DATA_BUFFER_SIZE;
+    me->rsize = rdma_context.buff_size;
     me->rbuf_list = calloc(rdma_context.buff_per_thread, sizeof(char *));
     me->rmr_list = calloc(rdma_context.buff_per_thread, sizeof(struct ibv_mr*));
     me->rwr_list = calloc(rdma_context.buff_per_thread, sizeof(struct ibv_recv_wr));
