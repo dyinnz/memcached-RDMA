@@ -769,8 +769,11 @@ rdma_add_sge(conn *c, const void *buf, int len) {
 
         struct ibv_mr *mr = rdma_reg_msgs(c->id, (void*)buf, len);
         if (!mr) {
+            perror("in rdma_add_sge(), rdma_reg_msgs()");
             return -1;
         }
+        c->sge[c->sge_used].lkey = mr->lkey; /* RDMA TODO 1 */
+
         c->mr_list[c->mr_used] = mr;
         c->mr_used += 1;
     }
@@ -2932,6 +2935,8 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
     }
 }
 
+static char kValue[] = "VALUE ";
+
 /* ntokens is overwritten here... shrug.. */
 static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens, bool return_cas) {
     char *key;
@@ -3019,7 +3024,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                   int suffix_len = snprintf(suffix, SUFFIX_SIZE,
                                             " %llu\r\n",
                                             (unsigned long long)ITEM_get_cas(it));
-                  if (add_iov(c, "VALUE ", 6) != 0 ||
+                  if (add_iov(c, kValue, 6) != 0 ||
                       add_iov(c, ITEM_key(it), it->nkey) != 0 ||
                       add_iov(c, ITEM_suffix(it), it->nsuffix - 2) != 0 ||
                       add_iov(c, suffix, suffix_len) != 0 ||
@@ -3033,7 +3038,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                 {
                   MEMCACHED_COMMAND_GET(c->sfd, ITEM_key(it), it->nkey,
                                         it->nbytes, ITEM_get_cas(it));
-                  if (add_iov(c, "VALUE ", 6) != 0 ||
+                  if (add_iov(c, kValue, 6) != 0 ||
                       add_iov(c, ITEM_key(it), it->nkey) != 0 ||
                       add_iov(c, ITEM_suffix(it), it->nsuffix + it->nbytes) != 0)
                       {
@@ -3098,7 +3103,8 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
         reliable to add END\r\n to the buffer, because it might not end
         in \r\n. So we send SERVER_ERROR instead.
     */
-    if (key_token->value != NULL || add_iov(c, "END\r\n", 5) != 0
+    static char kEnd[] = "END\r\n";
+    if (key_token->value != NULL || add_iov(c, kEnd, 5) != 0
         || (IS_UDP(c->transport) && build_udp_headers(c) != 0)) {
         out_of_memory(c, "SERVER_ERROR out of memory writing get response");
     }
