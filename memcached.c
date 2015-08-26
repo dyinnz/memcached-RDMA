@@ -6416,6 +6416,16 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 }
                 conn_set_state(c, conn_waiting);
             } else {
+                /* post a recv again to recv new message */
+                if (0 != rdma_post_recv(c->id, mr, mr->addr, mr->length, mr)) {
+                    if (settings.verbose > 0) {
+                        perror("rdma_post_recv()");
+                    }
+                    conn_set_state(c, conn_closing);
+                    break;
+                }
+                c->total_post_recv += 1;
+
                 if (settings.verbose > 2) {
                     fprintf(stderr, "stop reading new command\n");
                 }
@@ -6513,16 +6523,6 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 /* wee need more data! */
                 conn_set_state(c, conn_waiting);
             }
-
-            /* post a recv again to recv new message */
-            if (0 != rdma_post_recv(c->id, mr, mr->addr, mr->length, mr)) {
-                if (settings.verbose > 0) {
-                    perror("rdma_post_recv()");
-                }
-                conn_set_state(c, conn_closing);
-                break;
-            }
-            c->total_post_recv += 1;
 
             break;
 
