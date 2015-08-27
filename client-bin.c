@@ -11,6 +11,8 @@
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
+#include "protocol_binary.h"
+
 #define BUFF_SIZE 1024
 #define RDMA_MAX_HEAD 16
 #define POLL_WC_SIZE 128
@@ -51,6 +53,18 @@ static char prepend_reply[] = "prepend foo 0 0 1\r\n1\r\n";
 static char incr_reply[] = "incr foo 1\r\n";
 static char decr_reply[] = "decr foo 1\r\n";
 static char delete_reply[] = "delete foo\r\n";
+
+/******************************************************************************
+ * Bin request
+ * ****************************************************************************/
+protocol_binary_request_add 	add_bin;
+protocol_binary_request_set 	set_bin;
+protocol_binary_request_replace replace_bin;
+protocol_binary_request_append 	append_bin;
+protocol_binary_request_prepend prepend_bin;
+protocol_binary_request_incr 	incr_bin;
+protocol_binary_request_decr 	decr_bin;
+protocol_binary_request_delete 	delete_bin;
 
 /***************************************************************************//**
  * Relative resources around connection
@@ -93,6 +107,55 @@ struct wr_context {
     struct rdma_conn       *c;
     struct ibv_mr           *mr;
 };
+
+void init_binary_message(void)
+{
+    add_bin.message.header.request.magic = PROTOCOL_BINARY_REQ;
+    add_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_ADD;
+    add_bin.message.header.request.keylen = 1;
+    add_bin.message.header.request.extlen = 8;
+    add_bin.message.header.request.datatype = PROTOCOL_BINARY_RAW_BYTES;
+    add_bin.message.header.request.bodylen = 10;
+    add_bin.message.header.request.reserved = add_bin.message.header.request.opaque = add_bin.message.header.request.cas = 0;
+    add_bin.message.body.flags = 0;
+    add_bin.message.body.expiration = 0;
+
+
+    set_bin = add_bin;
+    set_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_SET;
+
+
+    replace_bin = add_bin;
+    replace_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_REPLACE;
+
+
+    append_bin.message.header = add_bin.message.header;
+    append_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_APPEND;
+    append_bin.message.header.request.extlen = 0;
+    append_bin.message.header.request.bodylen = 2;
+
+
+    prepend_bin = append_bin;
+    prepend_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_PREPEND;
+
+
+    incr_bin.message.header = add_bin.message.header;
+    incr_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_INCREMENT;
+    incr_bin.message.header.request.extlen = 20;
+    incr_bin.message.header.request.bodylen = 21;
+    incr_bin.message.body.delta = 1;
+    incr_bin.message.body.initial = 0;
+    incr_bin.message.body.expiration = 0;
+
+
+    decr_bin = incr_bin;
+    decr_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_DECREMENT;
+
+
+    delete_bin = append_bin;
+    delete_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_DELETE;
+    delete_bin.message.header.request.bodylen = 1;
+}
 
 /***************************************************************************//**
  * Description 

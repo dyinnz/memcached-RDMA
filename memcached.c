@@ -6123,6 +6123,8 @@ rdma_conn_new() {
     c->sfd = 0;
     /* conns[sfd] = c; */
 
+    c->protocol = settings.binding_protocol;
+
     c->rmr_list = malloc(sizeof(struct ibv_mr*) * rdma_context.buff_per_conn);
     c->rbuf_list = malloc(sizeof(char *) * rdma_context.buff_per_conn);
     c->wc_ctx_list = malloc(sizeof(struct wc_context) * rdma_context.buff_per_conn);
