@@ -6339,6 +6339,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
     /* int     nreqs = settings.reqs_per_event; */
     /* because of there must be only one request per event, so set it to 1. */
     int     nreqs = 1;
+    int     i = 0;
     bool    stop = false; 
 
     while (!stop) {
@@ -6354,20 +6355,22 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
             switch (wc->opcode) {
                 /* have written data */
                 case IBV_WC_SEND:
+                    if (settings.verbose > 2) {
+                        fprintf(stderr, "use sge: %d\n", c->mr_used);
+                    }
+
+                    for (i = 0; i < c->mr_used; ++i) {
+                        if (0 != rdma_dereg_mr(c->mr_list[i])) {
+                            perror("rdma_dereg_mr()");
+                            conn_set_state(c, conn_closing);
+                            break;
+                        }
+                    }
+                    c->mr_used = 0;
+                    c->sge_used = 0;
+
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
-                    
-                        int i = 0;
-                        for (i = 0; i < c->mr_used; ++i) {
-                            if (0 != rdma_dereg_mr(c->mr_list[i])) {
-                                perror("rdma_dereg_mr()");
-                                conn_set_state(c, conn_closing);
-                                break;
-                            }
-                        }
-                        c->mr_used = 0;
-                        c->sge_used = 0;
-
                         if(c->protocol == binary_prot) {
                             conn_set_state(c, c->write_and_go);
                         } else {
@@ -6538,7 +6541,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
         }
     }
 
-    if (IBV_WC_SUCCESS == wc->status && IBV_WC_SEND & wc->opcode) {
+    if (IBV_WC_SUCCESS == wc->status && (IBV_WC_RECV & wc->opcode)) {
         /* post a recv again to recv new message */
         if (0 != rdma_post_recv(c->id, mr, mr->addr, mr->length, mr)) {
             if (settings.verbose > 0) {
