@@ -6069,7 +6069,7 @@ rdma_cm_event_handler(int fd, short libevent_event, void *arg) {
 
         case RDMA_CM_EVENT_DISCONNECTED:
             if (settings.verbose > 0) { 
-                fprintf(stderr, "conn %p, recv msg: %d, post recv: %d, cqe %d\n",
+                fprintf(stderr, "conn %p, recv msg: %d, post recv: %d, cqe %d\n\n",
                         (void*)c, c->total_recv_msg, c->total_post_recv, c->total_cqe);
             }
 
@@ -6324,7 +6324,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
     struct ibv_mr *mr = (struct ibv_mr*)(uintptr_t)wc->wr_id;
 
     if (settings.verbose > 2) {
-        fprintf(stderr, "qp num in wc: %d\n", wc->qp_num);
+        fprintf(stderr, "DRIVE MACHINE BEGIN: qp num in wc: %d\n", wc->qp_num);
     }
     c->total_cqe += 1;
 
@@ -6448,6 +6448,10 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
             if (c->rlbytes == 0) {
                 complete_nread(c);
                 break;
+            }
+
+            if (settings.verbose > 2) {
+                fprintf(stderr, "rlbytes: %d\n", c->rlbytes);
             }
 
             /* Check if rbytes < 0, to prevent crash */
