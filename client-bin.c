@@ -36,6 +36,7 @@ static int      max_sge = 8;
  * Testing message
  *
  ******************************************************************************/
+/*
 static char add_noreply[] = "add foo 0 0 1 noreply\r\n1\r\n";
 static char set_noreply[] = "set foo 0 0 1 noreply\r\n1\r\n";
 static char replace_noreply[] = "replace foo 0 0 1 noreply\r\n1\r\n";
@@ -53,18 +54,18 @@ static char prepend_reply[] = "prepend foo 0 0 1\r\n1\r\n";
 static char incr_reply[] = "incr foo 1\r\n";
 static char decr_reply[] = "decr foo 1\r\n";
 static char delete_reply[] = "delete foo\r\n";
-
+*/
 /******************************************************************************
  * Bin request
  * ****************************************************************************/
-protocol_binary_request_add 	add_bin;
-protocol_binary_request_set 	set_bin;
-protocol_binary_request_replace replace_bin;
-protocol_binary_request_append 	append_bin;
-protocol_binary_request_prepend prepend_bin;
-protocol_binary_request_incr 	incr_bin;
-protocol_binary_request_decr 	decr_bin;
-protocol_binary_request_delete 	delete_bin;
+void 	*add_bin;
+void 	*set_bin;
+void 	*replace_bin;
+void 	*append_bin;
+void 	*prepend_bin;
+void 	*incr_bin;
+void 	*decr_bin;
+void 	*delete_bin;
 
 /***************************************************************************//**
  * Relative resources around connection
@@ -110,51 +111,79 @@ struct wr_context {
 
 void init_binary_message(void)
 {
-    add_bin.message.header.request.magic = PROTOCOL_BINARY_REQ;
-    add_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_ADD;
-    add_bin.message.header.request.keylen = 1;
-    add_bin.message.header.request.extlen = 8;
-    add_bin.message.header.request.datatype = PROTOCOL_BINARY_RAW_BYTES;
-    add_bin.message.header.request.bodylen = 10;
-    add_bin.message.header.request.reserved = add_bin.message.header.request.opaque = add_bin.message.header.request.cas = 0;
-    add_bin.message.body.flags = 0;
-    add_bin.message.body.expiration = 0;
+    protocol_binary_request_add *add_bin_p;
+    add_bin = malloc(sizeof(protocol_binary_request_add) + 2);
+    add_bin_p = (protocol_binary_request_add *)add_bin;
+    add_bin_p->message.header.request.magic = PROTOCOL_BINARY_REQ;
+    add_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_ADD;   
+    add_bin_p->message.header.request.keylen = 1;
+    add_bin_p->message.header.request.extlen = 8;
+    add_bin_p->message.header.request.datatype = PROTOCOL_BINARY_RAW_BYTES;
+    add_bin_p->message.header.request.bodylen = 10;
+    add_bin_p->message.header.request.reserved = add_bin_p->message.header.request.opaque = add_bin_p->message.header.request.cas = 0;
+    add_bin_p->message.body.flags = 0;
+    add_bin_p->message.body.expiration = 0;
+    *((char *)add_bin + sizeof(protocol_binary_request_add)) = '1';
+    *((char *)add_bin + sizeof(protocol_binary_request_add) + 1) = '1';
 
 
-    set_bin = add_bin;
-    set_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_SET;
+    protocol_binary_request_set *set_bin_p;
+    set_bin = malloc(sizeof(protocol_binary_request_set) + 2);
+    set_bin_p = (protocol_binary_request_set *)set_bin;
+    memcpy(set_bin, add_bin, sizeof(protocol_binary_request_set) + 2);
+    set_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_SET;
 
 
-    replace_bin = add_bin;
-    replace_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_REPLACE;
+    protocol_binary_request_replace *replace_bin_p;
+    replace_bin = malloc(sizeof(protocol_binary_request_replace) + 2);
+    replace_bin_p = (protocol_binary_request_replace *)replace_bin;
+    memcpy(replace_bin, add_bin, sizeof(protocol_binary_request_replace) + 2);
+    replace_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_REPLACE;
+
+    
+    protocol_binary_request_append *append_bin_p;
+    append_bin = malloc(sizeof(protocol_binary_request_append) + 2);
+    append_bin_p = (protocol_binary_request_append *)append_bin;
+    memcpy(append_bin, add_bin, sizeof(protocol_binary_request_header));
+    append_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_APPEND;
+    append_bin_p->message.header.request.extlen = 0;
+    append_bin_p->message.header.request.bodylen = 2;
+    *((char *)append_bin + sizeof(protocol_binary_request_append)) = '1';
+    *((char *)append_bin + sizeof(protocol_binary_request_append) + 1) = '1';
 
 
-    append_bin.message.header = add_bin.message.header;
-    append_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_APPEND;
-    append_bin.message.header.request.extlen = 0;
-    append_bin.message.header.request.bodylen = 2;
+    protocol_binary_request_prepend *prepend_bin_p;
+    prepend_bin = malloc(sizeof(protocol_binary_request_prepend) + 2);
+    prepend_bin_p = (protocol_binary_request_prepend *)prepend_bin;
+    memcpy(prepend_bin, append_bin, sizeof(protocol_binary_request_append) + 2);
+    prepend_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_PREPEND;
 
 
-    prepend_bin = append_bin;
-    prepend_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_PREPEND;
+    protocol_binary_request_incr *incr_bin_p;
+    incr_bin = malloc(sizeof(protocol_binary_request_incr) + 1);
+    incr_bin_p = (protocol_binary_request_incr *)incr_bin;
+    memcpy(incr_bin, add_bin, sizeof(protocol_binary_request_header));
+    incr_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_INCREMENT;
+    incr_bin_p->message.header.request.extlen = 20;
+    incr_bin_p->message.header.request.bodylen = 21;
+    incr_bin_p->message.body.delta = 1;
+    incr_bin_p->message.body.initial = 0;
+    incr_bin_p->message.body.expiration = 0;
+    *((char *)incr_bin + sizeof(protocol_binary_request_append)) = '1';
 
 
-    incr_bin.message.header = add_bin.message.header;
-    incr_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_INCREMENT;
-    incr_bin.message.header.request.extlen = 20;
-    incr_bin.message.header.request.bodylen = 21;
-    incr_bin.message.body.delta = 1;
-    incr_bin.message.body.initial = 0;
-    incr_bin.message.body.expiration = 0;
+    protocol_binary_request_decr *decr_bin_p;
+    decr_bin = malloc(sizeof(protocol_binary_request_decr) + 1);
+    decr_bin_p = (protocol_binary_request_decr *)decr_bin;
+    memcpy(decr_bin, incr_bin, sizeof(protocol_binary_request_incr) + 1);
+    decr_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_DECREMENT;
 
 
-    decr_bin = incr_bin;
-    decr_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_DECREMENT;
-
-
-    delete_bin = append_bin;
-    delete_bin.message.header.request.opcode = PROTOCOL_BINARY_CMD_DELETE;
-    delete_bin.message.header.request.bodylen = 1;
+    protocol_binary_request_delete *delete_bin_p;
+    delete_bin = malloc(sizeof(protocol_binary_request_delete) + 1);
+    delete_bin_p = (protocol_binary_request_delete *)delete_bin;
+    memcpy(delete_bin, append_bin, sizeof(protocol_binary_request_delete) + 1);
+    delete_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_DELETE;
 }
 
 /***************************************************************************//**
@@ -337,7 +366,7 @@ test_with_regmem(void *arg) {
     if ( !(c = build_connection()) ) {
         return NULL;
     }
-
+/*
     printf("noreply:\n");
 
     struct ibv_mr   *add_noreply_mr = rdma_reg_msgs(c->id, add_noreply, sizeof(add_noreply));
@@ -363,18 +392,18 @@ test_with_regmem(void *arg) {
     clock_gettime(CLOCK_REALTIME, &finish);
     printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
                 (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
-
+*/
     printf("\nreply:\n");
     clock_gettime(CLOCK_REALTIME, &start);
 
-    struct ibv_mr   *add_reply_mr = rdma_reg_msgs(c->id, add_reply, sizeof(add_reply));
-    struct ibv_mr   *set_reply_mr = rdma_reg_msgs(c->id, set_reply, sizeof(set_reply));
-    struct ibv_mr   *replace_reply_mr = rdma_reg_msgs(c->id, replace_reply, sizeof(replace_reply));
-    struct ibv_mr   *append_reply_mr = rdma_reg_msgs(c->id, append_reply, sizeof(append_reply));
-    struct ibv_mr   *prepend_reply_mr = rdma_reg_msgs(c->id, prepend_reply, sizeof(prepend_reply));
-    struct ibv_mr   *incr_reply_mr = rdma_reg_msgs(c->id, incr_reply, sizeof(incr_reply));
-    struct ibv_mr   *decr_reply_mr = rdma_reg_msgs(c->id, decr_reply, sizeof(decr_reply));
-    struct ibv_mr   *delete_reply_mr = rdma_reg_msgs(c->id, delete_reply, sizeof(delete_reply));
+    struct ibv_mr   *add_reply_mr = rdma_reg_msgs(c->id, add_bin, sizeof(protocol_binary_request_add)+2);
+    struct ibv_mr   *set_reply_mr = rdma_reg_msgs(c->id, set_bin, sizeof(protocol_binary_request_set)+2);
+    struct ibv_mr   *replace_reply_mr = rdma_reg_msgs(c->id, replace_bin, sizeof(protocol_binary_request_replace)+2);
+    struct ibv_mr   *append_reply_mr = rdma_reg_msgs(c->id, append_bin, sizeof(protocol_binary_request_append)+2);
+    struct ibv_mr   *prepend_reply_mr = rdma_reg_msgs(c->id, prepend_bin, sizeof(protocol_binary_request_prepend)+2);
+    struct ibv_mr   *incr_reply_mr = rdma_reg_msgs(c->id, incr_bin, sizeof(protocol_binary_request_incr)+1);
+    struct ibv_mr   *decr_reply_mr = rdma_reg_msgs(c->id, decr_bin, sizeof(protocol_binary_request_decr)+1);
+    struct ibv_mr   *delete_reply_mr = rdma_reg_msgs(c->id, delete_bin, sizeof(protocol_binary_request_delete)+1);
 
     for (i = 0; i < request_number; ++i) {
         send_mr(c->id, add_reply_mr);
