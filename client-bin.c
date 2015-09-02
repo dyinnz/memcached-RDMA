@@ -476,6 +476,8 @@ main(int argc, char *argv[]) {
                     finish;
     clock_gettime(CLOCK_REALTIME, &start);
 
+    init_binary_message();
+
     test_with_regmem(NULL);
 
     clock_gettime(CLOCK_REALTIME, &finish);
