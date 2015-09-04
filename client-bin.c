@@ -116,10 +116,10 @@ void init_binary_message(void)
     add_bin_p = (protocol_binary_request_add *)add_bin;
     add_bin_p->message.header.request.magic = PROTOCOL_BINARY_REQ;
     add_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_ADD;   
-    add_bin_p->message.header.request.keylen = 1;
+    add_bin_p->message.header.request.keylen = htons(1);
     add_bin_p->message.header.request.extlen = 8;
     add_bin_p->message.header.request.datatype = PROTOCOL_BINARY_RAW_BYTES;
-    add_bin_p->message.header.request.bodylen = 10;
+    add_bin_p->message.header.request.bodylen = htonl(10);
     add_bin_p->message.header.request.reserved = add_bin_p->message.header.request.opaque = add_bin_p->message.header.request.cas = 0;
     add_bin_p->message.body.flags = 0;
     add_bin_p->message.body.expiration = 0;
