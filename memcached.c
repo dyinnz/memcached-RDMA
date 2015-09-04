@@ -6491,14 +6491,17 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                         break;
                     }
                     if (settings.verbose > 2) {
-                        fprintf(stderr, "post read ok\n");
+                        fprintf(stderr, "post read ok, rlbytes: %d\n", c->rlbytes);
                     }
                     break;
 
                 } else {
-                    c->rlbytes -= mr->length;
+                    c->rlbytes -= wc->byte_len;
+                    if (c->rlbytes < 0) {
+                        c->rlbytes = 0;
+                    }
                     if (settings.verbose > 2) {
-                        fprintf(stderr, "rdma read ok\n");
+                        fprintf(stderr, "rdma read ok, rlbytes: %d\n", c->rlbytes);
                     }
                     if (0 != c->rlbytes) {
                         conn_set_state(c, conn_closing);
@@ -6589,6 +6592,13 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 }
                 if (c->rcurr < c->rbuf + c->rbytes && '\n' == *c->rcurr) {
                     c->rcurr += 1;
+                    c->rbuf = c->rcurr;
+                    c->rbytes -= c->rcurr - c->rbuf;
+
+                    if (settings.verbose > 2) {
+                        fprintf(stderr, "AFTER READ RDMA HEADER:\n%s\n", c->rbuf);
+                    }
+
                 } else {
                     conn_set_state(c, conn_closing);
                     break;
