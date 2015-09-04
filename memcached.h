@@ -401,7 +401,7 @@ typedef struct {
     uint32_t        remaining;  /* Max keys to crawl per slab per invocation */
 } crawler;
 
-struct hashtable_t;
+struct hashtable_s;
 typedef struct {
     pthread_t thread_id;        /* unique ID of this thread */
     struct event_base *base;    /* libevent handle this thread uses */
@@ -427,7 +427,7 @@ typedef struct {
     struct ibv_recv_wr          *rwr_list;
     struct ibv_wc               *poll_wc;
 
-    struct hashtable_t          *qp_hash;
+    struct hashtable_s          *qp_hash;
 } LIBEVENT_THREAD;
 
 typedef struct {
@@ -435,14 +435,6 @@ typedef struct {
     struct event_base *base;    /* libevent handle this thread uses */
 } LIBEVENT_DISPATCHER_THREAD;
 
-
-/***************************************************************************//**
- * for rdma wc
- ******************************************************************************/
-struct wc_context {
-    struct ibv_mr   *mr;
-    struct conn     *c;
-};
 /**
  * The structure representing a connection into memcached.
  */
@@ -459,7 +451,8 @@ struct conn {
     struct ibv_srq              *srq;
 
     /* unique */
-    struct ibv_mr               *send_mr;
+    struct ibv_mr               *wmr;
+    int                         wused; 
 
     struct ibv_sge              *sge;
     int                         sge_size;
@@ -471,12 +464,6 @@ struct conn {
     enum conn_states            write_state;
 
     int                         continue_nread;
-
-    /* RDMA TODO: do not use now
-    struct ibv_send_wr          *sendwr_list;
-    int                         sendwr_size;
-    int                         sendwr_used;
-    */
 
     /* statistics */
     int                         total_cqe;
@@ -705,21 +692,21 @@ struct rdma_context {
 extern struct rdma_context rdma_context;
 
 /* hash table */
-typedef struct hash_item_t {
-    struct hash_item_t *next;
+typedef struct hash_item_s {
+    struct hash_item_s *next;
     int32_t key;
     void *p;
-} hash_item_s;
+} hash_item_t;
 
-typedef struct hashtable_t {
+typedef struct hashtable_s {
     size_t size;
-    hash_item_s *T;
-} hashtable_s;
+    hash_item_t *T;
+} hashtable_t;
 
-hashtable_s* hashtable_create(size_t size);
-size_t calc_hash(hashtable_s *h, int32_t key);
-void hashtable_free(hashtable_s *h);
-int hashtable_insert(hashtable_s *h, int32_t key, void *p);
-void *hashtable_search(hashtable_s *h, int32_t key);
-void hashtable_delete(hashtable_s *h, int32_t key);
+hashtable_t* hashtable_create(size_t size);
+size_t calc_hash(hashtable_t *h, int32_t key);
+void hashtable_free(hashtable_t *h);
+int hashtable_insert(hashtable_t *h, int32_t key, void *p);
+void *hashtable_search(hashtable_t *h, int32_t key);
+void hashtable_delete(hashtable_t *h, int32_t key);
 
