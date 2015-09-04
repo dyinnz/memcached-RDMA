@@ -6445,13 +6445,13 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
             break;
 
         case conn_nread:
+            if (settings.verbose > 2) {
+                fprintf(stderr, "rlbytes: %d\n", c->rlbytes);
+            }
+
             if (c->rlbytes == 0) {
                 complete_nread(c);
                 break;
-            }
-
-            if (settings.verbose > 2) {
-                fprintf(stderr, "rlbytes: %d\n", c->rlbytes);
             }
 
             /* Check if rbytes < 0, to prevent crash */
