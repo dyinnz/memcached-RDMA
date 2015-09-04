@@ -73,6 +73,7 @@ static int rdma_build(int port, enum rdma_transport transport, FILE *portnumber_
 static void rdma_cm_event_handler(int fd, short libevent_event, void *arg);
 static int attach_rdma_listen_event();
 static int handle_connect_request(struct rdma_cm_id *id);
+
 static void rdma_drive_machine(struct ibv_wc *wc, conn* c);
 static int rdma_add_sge(conn *c, const void *buf, int len);
 
@@ -762,13 +763,14 @@ rdma_add_sge(conn *c, const void *buf, int len) {
     if (c->wbuf == buf) {
         c->sge[c->sge_used].lkey = c->wmr->lkey; /* RDMA TODO 1 */
         c->wused = len;
+        c->sge_used += 1;
 
     } else if (c->wused + len <= c->wsize) {
         memcpy(c->wbuf + c->wused, buf, len);
         c->wused += len;
 
     } else {
-        if (c->mr_used == c->sge_size) {
+        if (c->wmr_used == c->sge_size) {
             return -1;
         }
 
@@ -779,11 +781,11 @@ rdma_add_sge(conn *c, const void *buf, int len) {
         }
         c->sge[c->sge_used].lkey = mr->lkey; /* RDMA TODO 1 */
 
-        c->mr_list[c->mr_used] = mr;
-        c->mr_used += 1;
+        c->wmr_list[c->wmr_used] = mr;
+        c->wmr_used += 1;
+        c->sge_used += 1;
     }
 
-    c->sge_used += 1;
     return 0;
 }
 
@@ -6138,12 +6140,12 @@ rdma_conn_new() {
 
     c->sge_size = IOV_LIST_INITIAL;
     c->sge = malloc(sizeof(struct ibv_sge) * c->sge_size);
-    c->mr_list = calloc(c->sge_size, sizeof(struct ibv_mr*));
+    c->wmr_list = calloc(c->sge_size, sizeof(struct ibv_mr*));
 
 /*    if (c->rbuf == 0 || c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
             c->msglist == 0 || c->suffixlist == 0) { */
     if (c->wbuf == 0 || c->ilist == 0 || c->iov == 0 || c->msglist == 0 || c->suffixlist == 0 ||
-        c->sge == 0 || c->mr_list == 0) {
+        c->sge == 0 || c->wmr_list == 0) {
         /* RDMA free */
         rdma_conn_free(c);
         STATS_LOCK();
@@ -6307,7 +6309,13 @@ rdma_conn_init(conn *c, enum conn_states init_state,
     c->continue_nread = false;
 
     c->sge_used = 0;
-    c->mr_used = 0;
+    c->wmr_used = 0;
+
+    c->read_mr = NULL;
+    c->read_size = 0;
+    
+    c->remote_addr = 0;
+    c->remote_rkey = 0;
 
     if (0 != hashtable_insert(c->thread->qp_hash, c->id->qp->qp_num, c)) {
         fprintf(stderr, "hashtable insert error!\n");
@@ -6363,17 +6371,17 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 /* have written data */
                 case IBV_WC_SEND:
                     if (settings.verbose > 2) {
-                        fprintf(stderr, "use sge: %d\n", c->mr_used);
+                        fprintf(stderr, "use sge: %d\n", c->wmr_used);
                     }
 
-                    for (i = 0; i < c->mr_used; ++i) {
-                        if (0 != rdma_dereg_mr(c->mr_list[i])) {
+                    for (i = 0; i < c->wmr_used; ++i) {
+                        if (0 != rdma_dereg_mr(c->wmr_list[i])) {
                             perror("rdma_dereg_mr()");
                             conn_set_state(c, conn_closing);
                             break;
                         }
                     }
-                    c->mr_used = 0;
+                    c->wmr_used = 0;
                     c->sge_used = 0;
 
                     if (c->write_state == conn_mwrite) {
@@ -6470,6 +6478,37 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                 break;
             }
 
+            if (0 != c->remote_addr && 0 != c->remote_rkey) {
+                if (!c->read_mr) {
+                    if ( !(c->read_mr = rdma_reg_read(c->id, c->ritem, c->rlbytes)) ) {
+                        conn_set_state(c, conn_closing);
+                        break;
+                    }
+                    if (0 != rdma_post_read(c->id, c->read_mr, c->read_mr->addr, 
+                                c->read_mr->length, c->read_mr, IBV_SEND_SIGNALED,
+                                c->remote_addr, c->remote_rkey)) {
+                        conn_set_state(c, conn_closing);
+                        break;
+                    }
+                    if (settings.verbose > 2) {
+                        fprintf(stderr, "post read ok\n");
+                    }
+                    break;
+
+                } else {
+                    c->rlbytes -= mr->length;
+                    if (settings.verbose > 2) {
+                        fprintf(stderr, "rdma read ok\n");
+                    }
+                    if (0 != c->rlbytes) {
+                        conn_set_state(c, conn_closing);
+                    }
+
+                    rdma_dereg_mr(c->read_mr);
+                    break;
+                }
+            }
+
             if (c->continue_nread) {
                 c->rcurr = c->rbuf = mr->addr;
                 c->rbytes = wc->byte_len;
@@ -6539,6 +6578,23 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
             break;
 
         case conn_parse_cmd:
+            if (HEAD_READ == c->rbuf[0]) {
+                if (3 != sscanf(c->rbuf+2, "%lu %u %u\n", &c->remote_addr, &c->remote_rkey, &c->read_size)) {
+                    conn_set_state(c, conn_closing);
+                    break;
+                }
+
+                while ('\n' != *c->rcurr && c->rcurr < c->rbuf + c->rbytes) {
+                    c->rcurr += 1;
+                }
+                if (c->rcurr < c->rbuf + c->rbytes && '\n' == *c->rcurr) {
+                    c->rcurr += 1;
+                } else {
+                    conn_set_state(c, conn_closing);
+                    break;
+                }
+            }
+
             if (try_read_command(c) == 0) {
                 /* wee need more data! */
                 conn_set_state(c, conn_waiting);
@@ -6607,9 +6663,9 @@ rdma_conn_free(conn *c) {
     if (c->wmr && 0 != rdma_dereg_mr(c->wmr)) {
         perror("rdma_dereg_mr() in rdma_conn_free()");
     }
-    if (c->mr_list) {
-        for (i = 0; i < c->mr_used; ++i) if (c->mr_list[i]) {
-            if (0 != rdma_dereg_mr(c->mr_list[i])) {
+    if (c->wmr_list) {
+        for (i = 0; i < c->wmr_used; ++i) if (c->wmr_list[i]) {
+            if (0 != rdma_dereg_mr(c->wmr_list[i])) {
                 perror("rdma_dereg_mr() in rdma_conn_free()");
             }
         }
@@ -6632,8 +6688,8 @@ rdma_conn_free(conn *c) {
 
     if (c->sge)
         free(c->sge);
-    if (c->mr_list)
-        free(c->mr_list);
+    if (c->wmr_list)
+        free(c->wmr_list);
 
     free(c);
 }
@@ -6642,7 +6698,6 @@ rdma_conn_free(conn *c) {
  * simple hash table for reusing memory
  *
  ******************************************************************************/
-
 
 size_t calc_hash(hashtable_t *h, int32_t key) {
     return key % h->size;

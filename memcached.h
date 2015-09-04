@@ -458,12 +458,18 @@ struct conn {
     int                         sge_size;
     int                         sge_used;
 
-    struct ibv_mr               **mr_list;
-    int                         mr_used;
+    struct ibv_mr               **wmr_list;
+    int                         wmr_used;
 
     enum conn_states            write_state;
 
     int                         continue_nread;
+
+    struct ibv_mr               *read_mr;
+    uint32_t                    read_size;
+
+    uint64_t                    remote_addr;
+    uint32_t                    remote_rkey;
 
     /* statistics */
     int                         total_cqe;
@@ -669,6 +675,9 @@ extern void drop_privileges(void);
  * RDMA Part
  *
  ******************************************************************************/
+
+#define HEAD_READ '\x88'
+#define HEAD_WRITE '\x99'
 
 void assign_conn_to_thread(conn *c);
 void dispatch_rdma_conn(conn *c);
