@@ -147,7 +147,7 @@ void init_binary_message(void)
     memcpy(append_bin, add_bin, sizeof(protocol_binary_request_header));
     append_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_APPEND;
     append_bin_p->message.header.request.extlen = 0;
-    append_bin_p->message.header.request.bodylen = 2;
+    append_bin_p->message.header.request.bodylen = htonl(2);
     *((char *)append_bin + sizeof(protocol_binary_request_append)) = '1';
     *((char *)append_bin + sizeof(protocol_binary_request_append) + 1) = '1';
 
@@ -165,7 +165,7 @@ void init_binary_message(void)
     memcpy(incr_bin, add_bin, sizeof(protocol_binary_request_header));
     incr_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_INCREMENT;
     incr_bin_p->message.header.request.extlen = 20;
-    incr_bin_p->message.header.request.bodylen = 21;
+    incr_bin_p->message.header.request.bodylen = htonl(21);
     incr_bin_p->message.body.delta = 1;
     incr_bin_p->message.body.initial = 0;
     incr_bin_p->message.body.expiration = 0;
