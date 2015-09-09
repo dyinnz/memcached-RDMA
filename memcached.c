@@ -750,7 +750,7 @@ static int ensure_iov_space(conn *c) {
  ******************************************************************************/
 static int 
 rdma_add_sge(conn *c, const void *buf, int len) {
-    assert(->sge_used < IOV_MAX);
+    assert(c->sge_used < IOV_MAX);
 
     c->sge[c->sge_used].addr = (uintptr_t)buf;
     c->sge[c->sge_used].length = len;
