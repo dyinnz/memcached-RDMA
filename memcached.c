@@ -6484,9 +6484,9 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                         conn_set_state(c, conn_closing);
                         break;
                     }
-                    if (0 != rdma_post_read(c->id, c->read_mr, c->read_mr->addr, 
-                                c->read_mr->length, c->read_mr, IBV_SEND_SIGNALED,
-                                c->remote_addr, c->remote_rkey)) {
+                    if (0 != rdma_post_read(c->id, c->read_mr, 
+                                c->read_mr->addr, c->read_mr->length, c->read_mr, 
+                                IBV_SEND_SIGNALED, c->remote_addr, c->remote_rkey)) {
                         conn_set_state(c, conn_closing);
                         break;
                     }
@@ -6508,6 +6508,9 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     }
 
                     rdma_dereg_mr(c->read_mr);
+                    /* clean the two attribution */
+                    c->remote_addr = 0;
+                    c->remote_rkey = 0;
                     break;
                 }
             }
@@ -6567,7 +6570,12 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
         case conn_mwrite:
             c->write_state = c->state;
 
-            if (0 != rdma_post_sendv(c->id, c->wmr, c->sge, c->sge_used, 0)) {
+            if (0 != c->remote_addr && 0 != c->remote_rkey 
+                && 0 != rdma_post_writev(c->id, c->wmr, c->sge, c->sge_used, 
+                    IBV_SEND_SIGNALED, c->remote_addr, c->remote_rkey)) { 
+                conn_set_state(c, conn_closing);
+                
+            } else if (0 != rdma_post_sendv(c->id, c->wmr, c->sge, c->sge_used, 0)) {
                 conn_set_state(c, conn_closing);
             } else {
                 conn_set_state(c, conn_waiting);
@@ -6581,7 +6589,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
             break;
 
         case conn_parse_cmd:
-            if (HEAD_READ == c->rbuf[0]) {
+            if (HEAD_OPERATION == c->rbuf[0]) {
                 if (3 != sscanf(c->rbuf+2, "%lu %u %u\n", &c->remote_addr, &c->remote_rkey, &c->read_size)) {
                     conn_set_state(c, conn_closing);
                     break;

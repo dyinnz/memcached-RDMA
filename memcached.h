@@ -676,8 +676,7 @@ extern void drop_privileges(void);
  *
  ******************************************************************************/
 
-#define HEAD_READ '\x88'
-#define HEAD_WRITE '\x99'
+#define HEAD_OPERATION '\x88'
 
 void assign_conn_to_thread(conn *c);
 void dispatch_rdma_conn(conn *c);
