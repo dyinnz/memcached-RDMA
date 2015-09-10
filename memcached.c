@@ -6317,6 +6317,8 @@ rdma_conn_init(conn *c, enum conn_states init_state,
     c->remote_addr = 0;
     c->remote_rkey = 0;
 
+    c->write_ack_mr = NULL;
+
     if (0 != hashtable_insert(c->thread->qp_hash, c->id->qp->qp_num, c)) {
         fprintf(stderr, "hashtable insert error!\n");
         return -1;
@@ -6373,6 +6375,10 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     if (settings.verbose > 2) {
                         fprintf(stderr, "use sge: %d\n", c->wmr_used);
                     }
+                    
+                    if (0 != c->remote_addr && 0 != c->remote_rkey) {
+                        fprintf(stderr, "post write ack ok!\n");
+                    }
 
                     for (i = 0; i < c->wmr_used; ++i) {
                         if (0 != rdma_dereg_mr(c->wmr_list[i])) {
@@ -6405,6 +6411,18 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     break;
 
                 case IBV_WC_RDMA_WRITE:
+                    if (settings.verbose > 2) {
+                        fprintf(stderr, "rdma write operation achieve\r\n");
+                    }
+                    static char write_ack_buff[] = "ack\r\n";
+                    if (!c->write_ack_mr && 0 != rdma_reg_msgs(c->id, write_ack_buff, sizeof(write_ack_buff))) {
+                        conn_set_state(c, conn_closing);
+                        break;
+                    }
+                    if (0 != rdma_post_send(c->id, c->write_ack_mr, c->write_ack_mr->addr, 
+                            c->write_ack_mr->length, c->write_ack_mr, 0)) {
+                        conn_set_state(c, conn_closing);
+                    }
 
                     break;
                 case IBV_WC_RDMA_READ:
@@ -6582,7 +6600,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
             }
             */
 
-            if (0 != c->remote_addr && 0 != c->remote_key) {
+            if (0 != c->remote_addr && 0 != c->remote_rkey) {
                 if (0 != rdma_post_writev(c->id, c->wmr, c->sge, c->sge_used, 
                                 IBV_SEND_SIGNALED, c->remote_addr, c->remote_rkey)) { 
                     conn_set_state(c, conn_closing);
@@ -6695,7 +6713,8 @@ rdma_conn_free(conn *c) {
 
     hashtable_delete(c->thread->qp_hash, c->id->qp->qp_num);
 
-    if (c->wmr && 0 != rdma_dereg_mr(c->wmr)) {
+    if ( (c->wmr && 0 != rdma_dereg_mr(c->wmr)) ||
+         (c->write_ack_mr && 0 != rdma_dereg_mr(c->write_ack_mr)) ) {
         perror("rdma_dereg_mr() in rdma_conn_free()");
     }
     if (c->wmr_list) {
@@ -6725,6 +6744,7 @@ rdma_conn_free(conn *c) {
         free(c->sge);
     if (c->wmr_list)
         free(c->wmr_list);
+
 
     free(c);
 }

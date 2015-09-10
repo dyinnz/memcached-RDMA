@@ -471,6 +471,8 @@ struct conn {
     uint64_t                    remote_addr;
     uint32_t                    remote_rkey;
 
+    struct ibv_mr               *write_ack_mr;
+
     /* statistics */
     int                         total_cqe;
     int                         total_recv_msg;
