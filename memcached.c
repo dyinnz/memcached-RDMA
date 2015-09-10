@@ -6405,6 +6405,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     break;
 
                 case IBV_WC_RDMA_WRITE:
+
                     break;
                 case IBV_WC_RDMA_READ:
                     break;
@@ -6570,12 +6571,28 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
         case conn_mwrite:
             c->write_state = c->state;
 
+            /*
             if (0 != c->remote_addr && 0 != c->remote_rkey 
                 && 0 != rdma_post_writev(c->id, c->wmr, c->sge, c->sge_used, 
                     IBV_SEND_SIGNALED, c->remote_addr, c->remote_rkey)) { 
+                if (settings.verbose > 2) {
+                    fprintf(stderr, "send post writev ok\n");
+                }
                 conn_set_state(c, conn_closing);
-                
+            }
+            */
+
+            if (0 != c->remote_addr && 0 != c->remote_key) {
+                if (0 != rdma_post_writev(c->id, c->wmr, c->sge, c->sge_used, 
+                                IBV_SEND_SIGNALED, c->remote_addr, c->remote_rkey)) { 
+                    conn_set_state(c, conn_closing);
+                }
+                if (settings.verbose > 2) {
+                    fprintf(stderr, "post writev ok!\n");
+                }
+
             } else if (0 != rdma_post_sendv(c->id, c->wmr, c->sge, c->sge_used, 0)) {
+
                 conn_set_state(c, conn_closing);
             } else {
                 conn_set_state(c, conn_waiting);
