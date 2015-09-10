@@ -758,16 +758,20 @@ static int
 rdma_add_sge(conn *c, const void *buf, int len) {
     assert(c->sge_used < IOV_MAX);
 
-    c->sge[c->sge_used].addr = (uintptr_t)buf;
-    c->sge[c->sge_used].length = len;
-    if (c->wbuf == buf) {
-        c->sge[c->sge_used].lkey = c->wmr->lkey; /* RDMA TODO 1 */
-        c->wused = len;
-        c->sge_used += 1;
+    if (settings.verbose > 2) {
+        fprintf(stderr, "debug print, buf: %s, sge num: %d\n", buf, c->sge_used);
+    }
 
-    } else if (c->wused + len <= c->wsize) {
-        memcpy(c->wbuf + c->wused, buf, len);
+    if (c->wused + len <= c->wsize) {
+        memmove(c->wbuf + c->wused, buf, len);
         c->wused += len;
+
+        c->sge[0].length = c->wused;
+        if (0 == c->sge_used) {
+            c->sge[0].addr = (uintptr_t)c->wbuf;
+            c->sge[0].lkey = c->wmr->lkey;
+            c->sge_used += 1;
+        }
 
     } else {
         if (c->wmr_used == c->sge_size) {
@@ -779,11 +783,13 @@ rdma_add_sge(conn *c, const void *buf, int len) {
             perror("in rdma_add_sge(), rdma_reg_msgs()");
             return -1;
         }
+        c->sge[c->sge_used].addr = (uintptr_t)buf;
+        c->sge[c->sge_used].length = len;
         c->sge[c->sge_used].lkey = mr->lkey; /* RDMA TODO 1 */
+        c->sge_used += 1;
 
         c->wmr_list[c->wmr_used] = mr;
         c->wmr_used += 1;
-        c->sge_used += 1;
     }
 
     return 0;
@@ -6378,6 +6384,8 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     
                     if (0 != c->remote_addr && 0 != c->remote_rkey) {
                         fprintf(stderr, "post write ack ok!\n");
+                        c->remote_addr = 0;
+                        c->remote_rkey = 0;
                     }
 
                     for (i = 0; i < c->wmr_used; ++i) {
@@ -6389,6 +6397,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     }
                     c->wmr_used = 0;
                     c->sge_used = 0;
+                    c->wused = 0;
 
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
@@ -6415,15 +6424,21 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                         fprintf(stderr, "rdma write operation achieve\r\n");
                     }
                     static char write_ack_buff[] = "ack\r\n";
-                    if (!c->write_ack_mr && 0 != rdma_reg_msgs(c->id, write_ack_buff, sizeof(write_ack_buff))) {
+                    if ( !c->write_ack_mr && !(c->write_ack_mr = rdma_reg_msgs(c->id, write_ack_buff, sizeof(write_ack_buff))) ) {
+                        if (settings.verbose > 2) {
+                            perror("ahieving write operation, rdma_reg_msgs()");
+                        }
                         conn_set_state(c, conn_closing);
                         break;
                     }
                     if (0 != rdma_post_send(c->id, c->write_ack_mr, c->write_ack_mr->addr, 
                             c->write_ack_mr->length, c->write_ack_mr, 0)) {
+                        if (settings.verbose > 2) {
+                            perror("ahieving write operation, rdma_post_send()");
+                        }
                         conn_set_state(c, conn_closing);
                     }
-
+                    stop = true;
                     break;
                 case IBV_WC_RDMA_READ:
                     break;
@@ -6606,8 +6621,10 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     conn_set_state(c, conn_closing);
                 }
                 if (settings.verbose > 2) {
-                    fprintf(stderr, "post writev ok!\n");
+                    fprintf(stderr, "post writev ok! sge num:%d\n", c->sge_used);
                 }
+                conn_set_state(c, conn_waiting);
+                stop = true;
 
             } else if (0 != rdma_post_sendv(c->id, c->wmr, c->sge, c->sge_used, 0)) {
 
