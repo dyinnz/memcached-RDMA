@@ -169,7 +169,7 @@ void init_binary_message(void)
     incr_bin_p->message.body.delta = 1;
     incr_bin_p->message.body.initial = 0;
     incr_bin_p->message.body.expiration = 0;
-    *((char *)incr_bin + sizeof(protocol_binary_request_append)) = '1';
+    *((char *)incr_bin + sizeof(protocol_binary_request_incr)) = '1';
 
 
     protocol_binary_request_decr *decr_bin_p;
@@ -405,7 +405,7 @@ test_with_regmem(void *arg) {
     struct ibv_mr   *decr_reply_mr = rdma_reg_msgs(c->id, decr_bin, sizeof(protocol_binary_request_decr)+1);
     struct ibv_mr   *delete_reply_mr = rdma_reg_msgs(c->id, delete_bin, sizeof(protocol_binary_request_delete)+1);
 
-    for (i = 0; i < request_number; ++i) {
+//    for (i = 0; i < request_number; ++i) {
         send_mr(c->id, add_reply_mr);
         recv_msg(c);
         send_mr(c->id, set_reply_mr);
@@ -422,7 +422,7 @@ test_with_regmem(void *arg) {
         recv_msg(c);
         send_mr(c->id, delete_reply_mr);
         recv_msg(c);
-    }
+//    }
 
     clock_gettime(CLOCK_REALTIME, &finish);
     printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
