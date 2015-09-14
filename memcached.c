@@ -6397,7 +6397,6 @@ rdma_drive_machine(struct ibv_wc *wc) {
             /* RDMA TODO: handle these event */
             switch (wc->opcode) {
                 case IBV_WC_SEND:
-                    printf("test\n");
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
                         if(c->protocol == binary_prot) {
