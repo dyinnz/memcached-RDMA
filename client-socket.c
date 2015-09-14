@@ -18,14 +18,20 @@
 #define POLL_WC_SIZE 128
 #define REG_PER_CONN 128
 
+#define ASCII_MIN_REQUEST
+#define BIN_MIN_REQUEST
+#define MEMCACHED_MAX_REQUEST
+
 /***************************************************************************//**
  * Testing parameters
  *
  ******************************************************************************/
+static bool 	bin_protocol = false;
 static char     *pstr_server = "127.0.0.1";
 static char     *pstr_port = "11211";
 static int      thread_number = 1;
 static int      request_number = 10000;
+static int 	reuqest_size = 100;
 static int      last_time = 1000;    /* secs */
 static int      verbose = 0;
 static int      cq_size = 1024;
@@ -228,6 +234,32 @@ init_rdma_global_resources() {
     }
 
      return 0;
+}
+
+int init_socket_resources(void)
+{
+    int socket;
+    struct sockaddr_in addr;
+
+    socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (socket < 0)
+    {
+	printf("Alloc socket fail!\n");
+	return 0;
+    }
+
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htons(INADDR_ANY);
+    addr.sin_port = htons(port);//--------------------------------
+    if (bind(socket, (struct sockaddr *)&addr, sizeof(addr)))
+    {
+	printf("Bind fail!\n");
+	return 0;
+    }
+
+
+
+
 }
 
 /***************************************************************************//**
@@ -465,24 +497,48 @@ main(int argc, char *argv[]) {
             case 'v':
                 verbose = 1;
                 break;
+	    case 'm':
+	    	request_size = atoi(optarg);
+	    case 'b':
+	    	bin_protocol = true;
             default:
                 assert(0);
         }
     }
 
-    init_rdma_global_resources();
+    if (bin_protocol == true)
+    {
+	if (request_size < BIN_MIX_REQUEST)
+	{
+	    printf("request_size is smaller than BIN_ASCII_REQUEST.\n");
+	    return 0;
+	}
+    } else {
+	if (request_size < ASCII_MIX_REQUEST)
+	{
+	    printf("request_size is smaller than ASCII_MIX_REQUEST.\n");
+	    return 0;
+	}
+    }
+    
+    if (request_size > MEMCACHED_MAX_REQUEST)
+    {
+	printf("request_size is larger than MEMCACHED_MAX_REQUEST.\n");
+	return 0;
+    }
+
+    init_socket_resources();
+    init_message();
 
     struct timespec start,
                     finish;
     clock_gettime(CLOCK_REALTIME, &start);
 
-    init_binary_message();
-
     test_with_regmem(NULL);
 
     clock_gettime(CLOCK_REALTIME, &finish);
 
-    printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
+    printf("Total cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
                 (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
     return 0;
 }
