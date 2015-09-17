@@ -8,6 +8,9 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#include <sys/socket.h>
+#include <sys/types.h>
+
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
@@ -18,9 +21,13 @@
 #define POLL_WC_SIZE 128
 #define REG_PER_CONN 128
 
-#define ASCII_MIN_REQUEST
-#define BIN_MIN_REQUEST
-#define MEMCACHED_MAX_REQUEST
+#define ASCII_MIX_REQUEST (10)
+#define BIN_MIX_REQUEST (10)
+#define MEMCACHED_MAX_REQUEST (10)
+
+#define bool int
+#define true (1)
+#define false (0)
 
 /***************************************************************************//**
  * Testing parameters
@@ -31,35 +38,36 @@ static char     *pstr_server = "127.0.0.1";
 static char     *pstr_port = "11211";
 static int      thread_number = 1;
 static int      request_number = 10000;
-static int 	reuqest_size = 100;
+static int 	request_size = 100;
 static int      last_time = 1000;    /* secs */
 static int      verbose = 0;
 static int      cq_size = 1024;
 static int      wr_size = 1024;
 static int      max_sge = 8;
+static int 	sock;
 
 /***************************************************************************//**
  * Testing message
  *
  ******************************************************************************/
 
-static char 	*add_ascii_noreply = "add foo 0 0 1 noreply\r\n1\r\n";
-static char 	*set_ascii_noreply = "set foo 0 0 1 noreply\r\n1\r\n";
-static char 	*replace_ascii_noreply = "replace foo 0 0 1 noreply\r\n1\r\n";
-static char 	*append_ascii_noreply = "append foo 0 0 1 noreply\r\n1\r\n";
-static char 	*prepend_ascii_noreply = "prepend foo 0 0 1 noreply\r\n1\r\n";
-static char 	*incr_ascii_noreply = "incr foo 1 noreply\r\n";
-static char 	*decr_ascii_noreply = "decr foo 1 noreply\r\n";
-static char 	*delete_ascii_noreply = "delete foo noreply\r\n";
+static char 	*add_ascii_noreply;
+static char 	*set_ascii_noreply;
+static char 	*replace_ascii_noreply;
+static char 	*append_ascii_noreply;
+static char 	*prepend_ascii_noreply;
+static char 	*incr_ascii_noreply;
+static char 	*decr_ascii_noreply;
+static char 	*delete_ascii_noreply;
 
-static char 	*add_ascii_reply = "add foo 0 0 1\r\n1\r\n";
-static char 	*set_ascii_reply = "set foo 0 0 1\r\n1\r\n";
-static char 	*replace_ascii_reply = "replace foo 0 0 1\r\n1\r\n";
-static char 	*append_ascii_reply = "append foo 0 0 1\r\n1\r\n";
-static char 	*prepend_ascii_reply = "prepend foo 0 0 1\r\n1\r\n";
-static char 	*incr_ascii_reply = "incr foo 1\r\n";
-static char 	*decr_ascii_reply = "decr foo 1\r\n";
-static char 	*delete_ascii_reply = "delete foo\r\n";
+static char 	*add_ascii_reply;
+static char 	*set_ascii_reply;
+static char 	*replace_ascii_reply;
+static char 	*append_ascii_reply;
+static char 	*prepend_ascii_reply;
+static char 	*incr_ascii_reply;
+static char 	*decr_ascii_reply;
+static char 	*delete_ascii_reply;
 
 /******************************************************************************
  * Bin request
@@ -115,14 +123,6 @@ struct wr_context {
     struct ibv_mr           *mr;
 };
 
-void init_message(void)
-{
-    if (bin_protocol == true)
-	init_binary_message();
-    else
-	init_ascii_message();
-}
-
 void write_to_buff(void **buff, void *data, int size)
 {
     memcpy(*buff, data, size);
@@ -132,7 +132,7 @@ void write_to_buff(void **buff, void *data, int size)
 
 void build_ascii_cmd(char *cmd_cache, char *cmd_name, int cmd_length, bool if_extra, bool if_delta, bool if_reply)
 {
-    int keylen, bodyleni, i;
+    int keylen, bodylen, i;
 	
     cmd_cache = malloc(request_size);
 
@@ -154,29 +154,29 @@ void build_ascii_cmd(char *cmd_cache, char *cmd_name, int cmd_length, bool if_ex
     if (if_reply == false)
 	keylen -= 8;
 	
-    write_to_buff(&cmd_cache, cmd_name, cmd_length);
+    write_to_buff((void**)&cmd_cache, cmd_name, cmd_length);
 
-    write_to_buff(&cmd_cache, " ", 1);
+    write_to_buff((void**)&cmd_cache, " ", 1);
     for (i = 0; i < keylen; i++)
-	write_to_buff(&cmd_cache, "1", 1);
+	write_to_buff((void**)&cmd_cache, "1", 1);
 	
     if (if_extra == true) // add set replace append prepend
-	write_to_buff(&cmd_cache, " 0 0 1", 6);
+	write_to_buff((void**)&cmd_cache, " 0 0 1", 6);
 
     if (if_delta == true) // incr decr
-	write_to_buff(&cmd_cache, " ", 1);
+	write_to_buff((void**)&cmd_cache, " ", 1);
 	for (i = 0; i < bodylen; i++)
-	    write_to_buff(&cmd_cache, "1", 1);
+	    write_to_buff((void**)&cmd_cache, "1", 1);
 	    
     if (if_reply == false)
-	write_to_buff(%cmd_cache, " noreply", 8);
+	write_to_buff((void**)&cmd_cache, " noreply", 8);
 	
-    write_to_buff(&cmd_cache, "\r\n", 2);
+    write_to_buff((void**)&cmd_cache, "\r\n", 2);
     
     if (if_extra == true) { // add set replace append prepend
-	for (i = 1; i < keylen, i++)
-	    write_to_buff(&cmd_cache, "1", 1);
-	write_to_buff(%cmd_cache, "\r\n", 2);
+	for (i = 1; i < keylen; i++)
+	    write_to_buff((void**)&cmd_cache, "1", 1);
+	write_to_buff((void**)&cmd_cache, "\r\n", 2);
     }
 
     return;
@@ -207,9 +207,9 @@ void init_ascii_message(void)
 
 void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
 {
-    int keylen, bodylen;
+    int keylen, bodylen, i;
     protocol_binary_request_header *tmp_hd;
-    char *body_ptr; // point to the position after the header
+    void *body_ptr; // point to the position after the header
 
     cmd_cache = malloc(request_size);
     tmp_hd = (protocol_binary_request_header *)cmd_cache;
@@ -219,41 +219,41 @@ void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
 	case PROTOCOL_BINARY_CMD_SET:
 	case PROTOCOL_BINARY_CMD_REPLACE:
 	    keylen = request_size - 32; // for the reason of memory align, do not use sizeof(protocol_binary_request_header)!!!!!!
-	    body_ptr = (char *)cmd_cache + 32;
-	    tmp_hd.request.extlen = 8;
-	    tmp_hd.body.flags = 0;
-	    tmp_hd.body.expiration = 0;
+	    body_ptr = cmd_cache + 32;
+	    tmp_hd->request.extlen = 8;
+	    ((protocol_binary_request_set *)tmp_hd)->message.body.flags = 0;
+	    ((protocol_binary_request_set *)tmp_hd)->message.body.expiration = 0;
 	    break;
 	case PROTOCOL_BINARY_CMD_APPEND:
 	case PROTOCOL_BINARY_CMD_PREPEND:
 	case PROTOCOL_BINARY_CMD_DELETE:
 	    keylen = request_size - 24; // see above
-	    body_ptr = (char *)cmd_cache + 24;
-	    tmp_hd.request.extlen = 0;
+	    body_ptr = cmd_cache + 24;
+	    tmp_hd->request.extlen = 0;
 	    break;
-	case PROTOCOL_BINARY_CMD_INCR:
-	case PROTOCOL_BINARY_CMD_DECR:
+	case PROTOCOL_BINARY_CMD_INCREMENT:
+	case PROTOCOL_BINARY_CMD_DECREMENT:
 	    keylen = request_size - 44; // see above
-	    body_ptr = (char *)cmd_cache + 44;
-	    tmp_hd.request.extlen = 20;
-	    tmp_hd.body.delta = 1;
-	    tmp_hd.body.initial = 0;
-	    tmp_hd.body.expiration = 0;
+	    body_ptr = cmd_cache + 44;
+	    tmp_hd->request.extlen = 20;
+	    ((protocol_binary_request_incr *)tmp_hd)->message.body.delta = 1;
+	    ((protocol_binary_request_incr *)tmp_hd)->message.body.initial = 0;
+	    ((protocol_binary_request_incr *)tmp_hd)->message.body.expiration = 0;
 	    break;
     }
 
-    if (keylen > 250) {
+    if (keylen > 250)
 	bodylen = keylen - 250;
     else
 	bodylen = 1;
     keylen -= bodylen;
 
-    tmp_hd.request.magic = PROTOCOL_BINARY_REQ;
-    tmp_hd.request.opcode = cmd;
-    tmp_hd.request.keylen = htons(keylen);
-    tmp_hd.requset.datatype = PROTOCOL_BINARY_RAW_BYTES;
-    tmp_hd.request.bodylen = htonl(bodylen);
-    tmp_hd.request.reserved = tmp_hd.request.opaque = tmp_hd.request.cas = 0;
+    tmp_hd->request.magic = PROTOCOL_BINARY_REQ;
+    tmp_hd->request.opcode = cmd;
+    tmp_hd->request.keylen = htons(keylen);
+    tmp_hd->request.datatype = PROTOCOL_BINARY_RAW_BYTES;
+    tmp_hd->request.bodylen = htonl(bodylen);
+    tmp_hd->request.reserved = tmp_hd->request.opaque = tmp_hd->request.cas = 0;
 
     for (i = 0 ; i < keylen + bodylen; i++)
 	write_to_buff(&body_ptr, "1", 1);
@@ -275,81 +275,12 @@ void init_binary_message(void)
     return;
 }
 
-void init_binary_message(void)
+void init_message(void)
 {
-    protocol_binary_request_add *add_bin_p;
-    add_bin = malloc(sizeof(protocol_binary_request_add) + 2);
-    add_bin_p = (protocol_binary_request_add *)add_bin;
-    add_bin_p->message.header.request.magic = PROTOCOL_BINARY_REQ;
-    add_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_ADD;   
-    add_bin_p->message.header.request.keylen = htons(1);
-    add_bin_p->message.header.request.extlen = 8;
-    add_bin_p->message.header.request.datatype = PROTOCOL_BINARY_RAW_BYTES;
-    add_bin_p->message.header.request.bodylen = htonl(10);
-    add_bin_p->message.header.request.reserved = add_bin_p->message.header.request.opaque = add_bin_p->message.header.request.cas = 0;
-    add_bin_p->message.body.flags = 0;
-    add_bin_p->message.body.expiration = 0;
-    *((char *)add_bin + sizeof(protocol_binary_request_add)) = '1';
-    *((char *)add_bin + sizeof(protocol_binary_request_add) + 1) = '1';
-
-
-    protocol_binary_request_set *set_bin_p;
-    set_bin = malloc(sizeof(protocol_binary_request_set) + 2);
-    set_bin_p = (protocol_binary_request_set *)set_bin;
-    memcpy(set_bin, add_bin, sizeof(protocol_binary_request_set) + 2);
-    set_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_SET;
-
-
-    protocol_binary_request_replace *replace_bin_p;
-    replace_bin = malloc(sizeof(protocol_binary_request_replace) + 2);
-    replace_bin_p = (protocol_binary_request_replace *)replace_bin;
-    memcpy(replace_bin, add_bin, sizeof(protocol_binary_request_replace) + 2);
-    replace_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_REPLACE;
-
-    
-    protocol_binary_request_append *append_bin_p;
-    append_bin = malloc(sizeof(protocol_binary_request_append) + 2);
-    append_bin_p = (protocol_binary_request_append *)append_bin;
-    memcpy(append_bin, add_bin, sizeof(protocol_binary_request_header));
-    append_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_APPEND;
-    append_bin_p->message.header.request.extlen = 0;
-    append_bin_p->message.header.request.bodylen = htonl(2);
-    *((char *)append_bin + sizeof(protocol_binary_request_append)) = '1';
-    *((char *)append_bin + sizeof(protocol_binary_request_append) + 1) = '1';
-
-
-    protocol_binary_request_prepend *prepend_bin_p;
-    prepend_bin = malloc(sizeof(protocol_binary_request_prepend) + 2);
-    prepend_bin_p = (protocol_binary_request_prepend *)prepend_bin;
-    memcpy(prepend_bin, append_bin, sizeof(protocol_binary_request_append) + 2);
-    prepend_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_PREPEND;
-
-
-    protocol_binary_request_incr *incr_bin_p;
-    incr_bin = malloc(sizeof(protocol_binary_request_incr) + 1);
-    incr_bin_p = (protocol_binary_request_incr *)incr_bin;
-    memcpy(incr_bin, add_bin, sizeof(protocol_binary_request_header));
-    incr_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_INCREMENT;
-    incr_bin_p->message.header.request.extlen = 20;
-    incr_bin_p->message.header.request.bodylen = htonl(21);
-    incr_bin_p->message.body.delta = 1;
-    incr_bin_p->message.body.initial = 0;
-    incr_bin_p->message.body.expiration = 0;
-    *((char *)incr_bin + sizeof(protocol_binary_request_incr)) = '1';
-
-
-    protocol_binary_request_decr *decr_bin_p;
-    decr_bin = malloc(sizeof(protocol_binary_request_decr) + 1);
-    decr_bin_p = (protocol_binary_request_decr *)decr_bin;
-    memcpy(decr_bin, incr_bin, sizeof(protocol_binary_request_incr) + 1);
-    decr_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_DECREMENT;
-
-
-    protocol_binary_request_delete *delete_bin_p;
-    delete_bin = malloc(sizeof(protocol_binary_request_delete) + 1);
-    delete_bin_p = (protocol_binary_request_delete *)delete_bin;
-    memcpy(delete_bin, append_bin, sizeof(protocol_binary_request_delete) + 1);
-    delete_bin_p->message.header.request.opcode = PROTOCOL_BINARY_CMD_DELETE;
+    if (bin_protocol == false)
+	init_ascii_message();
+    else 
+	init_binary_message();
 }
 
 /***************************************************************************//**
@@ -398,36 +329,32 @@ init_rdma_global_resources() {
 
 int init_socket_resources(void)
 {
-    int socket;
     struct sockaddr_in addr;
-
-    socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (socket < 0)
+    
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
     {
 	printf("Alloc socket fail!\n");
 	return 0;
     }
-
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htons(INADDR_ANY);
-    addr.sin_port = htons(port);//--------------------------------
-    if (bind(socket, (struct sockaddr *)&addr, sizeof(addr)))
-    {
-	printf("Bind fail!\n");
-	return 0;
-    }
+}
 
 
+int socket_build_connection(void)
+{
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    inet_pton(AF_INET, pstr_server, &server_addr.sin_addr);
+    server_addr.sin_port = htons(atoi(pstr_port));
 
-
+    return connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
 }
 
 /***************************************************************************//**
  * Connection server
  *
  ******************************************************************************/
-static struct rdma_conn *
-build_connection() {
+static struct rdma_conn * build_connection() {
     struct rdma_conn        *c = calloc(1, sizeof(struct rdma_conn));
     if (0 != rdma_create_id(NULL, &c->id, c, RDMA_PS_TCP)) {
         perror("rdma_create_id()");
@@ -503,9 +430,10 @@ test_with_regmem(void *arg) {
     struct timespec start,
                     finish;
     int i = 0;
+    void *recv_buff = malloc(BUFF_SIZE);
 
     clock_gettime(CLOCK_REALTIME, &start);
-    if ( !(c = build_connection()) ) {
+    if (!socket_build_connection()) {
         return NULL;
     }
 
@@ -513,14 +441,14 @@ test_with_regmem(void *arg) {
 	printf("ascii noreply:\n");
 	
 	for (i = 0; i < request_number; ++i) {
-	    send(socket, add_ascii_noreply, 	request_size);
-	    send(socket, set_ascii_noreply, 	request_size);
-	    send(socket, replace_ascii_noreply, request_size);
-	    send(socket, append_ascii_noreply, 	request_size);
-	    send(socket, prepend_ascii_noreply, request_size);
-	    send(socket, incr_ascii_noreply, 	request_size);
-	    send(socket, decr_ascii_noreply, 	request_size);
-	    send(socket, delete_ascii_noreply, 	request_size);
+	    send(sock, add_ascii_noreply, 	request_size, 	0);
+	    send(sock, set_ascii_noreply, 	request_size, 	0);
+	    send(sock, replace_ascii_noreply, request_size, 	0);
+	    send(sock, append_ascii_noreply, 	request_size, 	0);
+	    send(sock, prepend_ascii_noreply, request_size, 	0);
+	    send(sock, incr_ascii_noreply, 	request_size, 	0);
+	    send(sock, decr_ascii_noreply, 	request_size, 	0);
+	    send(sock, delete_ascii_noreply, 	request_size, 	0);
 	}
 	
 	clock_gettime(CLOCK_REALTIME, &finish);
@@ -531,21 +459,29 @@ test_with_regmem(void *arg) {
 	clock_gettime(CLOCK_REALTIME, &start);
 	
 	for (i = 0; i < request_number; ++i) {
-	    send(socket, add_ascii_reply, 	request_size);
-	    recv(socket, );
-	    send(socket, set_ascii_reply, 	request_size);
-	    recv;
-	    send(socket, replace_ascii_reply, 	request_size);
-	    recv;
-	    send(socket, append_ascii_reply, 	request_size);
-	    recv;
-	    send(socket, prepend_ascii_reply, 	request_size);
-	    recv;
-	    send(socket, incr_ascii_reply, 	request_size);
-	    recv;
-	    send(socket, decr_ascii_reply, 	request_size);
-	    recv;
-	    send(socket, delete_ascii_reply, 	request_size);
+	    send(sock, add_ascii_reply, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, set_ascii_reply, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, replace_ascii_reply, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, append_ascii_reply, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, prepend_ascii_reply, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, incr_ascii_reply, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, decr_ascii_reply, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, delete_ascii_reply, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
 	}
 	
 	clock_gettime(CLOCK_REALTIME, &finish);
@@ -558,14 +494,29 @@ test_with_regmem(void *arg) {
 	clock_gettime(CLOCK_REALTIME, &start);
 
 	for (i = 0; i < request_number; ++i){
-	    send(socket, add_bin_reply, 	request_size);
-	    send(socket, set_bin_reply, 	request_size);
-	    send(socket, replace_bin_reply, 	request_size);
-	    send(socket, append_bin_reply, 	request_size);
-	    send(socket, prepend_bin_reply, 	request_size);
-	    send(socket, incr_bin_reply, 	request_size);
-	    send(socket, decr_bin_reply, 	request_size);
-	    send(socket, delete_bin_reply, 	request_size);
+	    send(sock, add_bin, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, set_bin, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, replace_bin, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, append_bin, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, prepend_bin, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, incr_bin, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, decr_bin, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
+	    send(sock, delete_bin, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
 	}
 
 	clock_gettime(CLOCK_REALTIME, &finish);
