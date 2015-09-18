@@ -21,9 +21,9 @@
 #define POLL_WC_SIZE 128
 #define REG_PER_CONN 128
 
-#define ASCII_MIX_REQUEST (10)
-#define BIN_MIX_REQUEST (10)
-#define MEMCACHED_MAX_REQUEST (10)
+#define ASCII_MIX_REQUEST (28)
+#define BIN_MIX_REQUEST (45)
+#define MEMCACHED_MAX_REQUEST (1024)
 
 #define bool int
 #define true (1)
@@ -133,8 +133,6 @@ void write_to_buff(void **buff, void *data, int size)
 void build_ascii_cmd(char *cmd_cache, char *cmd_name, int cmd_length, bool if_extra, bool if_delta, bool if_reply)
 {
     int keylen, bodylen, i;
-	
-    cmd_cache = malloc(request_size);
 
     if (if_extra == true) // add set replace append prepend
 	keylen = request_size - cmd_length - 12; // useless charactor
@@ -163,10 +161,11 @@ void build_ascii_cmd(char *cmd_cache, char *cmd_name, int cmd_length, bool if_ex
     if (if_extra == true) // add set replace append prepend
 	write_to_buff((void**)&cmd_cache, " 0 0 1", 6);
 
-    if (if_delta == true) // incr decr
+    if (if_delta == true) {// incr decr
 	write_to_buff((void**)&cmd_cache, " ", 1);
 	for (i = 0; i < bodylen; i++)
 	    write_to_buff((void**)&cmd_cache, "1", 1);
+    }
 	    
     if (if_reply == false)
 	write_to_buff((void**)&cmd_cache, " noreply", 8);
@@ -211,7 +210,6 @@ void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
     protocol_binary_request_header *tmp_hd;
     void *body_ptr; // point to the position after the header
 
-    cmd_cache = malloc(request_size);
     tmp_hd = (protocol_binary_request_header *)cmd_cache;
 
     switch (cmd) {
@@ -223,6 +221,13 @@ void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
 	    tmp_hd->request.extlen = 8;
 	    ((protocol_binary_request_set *)tmp_hd)->message.body.flags = 0;
 	    ((protocol_binary_request_set *)tmp_hd)->message.body.expiration = 0;
+
+	    if (keylen > 250)
+		bodylen = keylen - 250;
+	    else
+		bodylen = 1;
+	    keylen -= bodylen;
+
 	    break;
 	case PROTOCOL_BINARY_CMD_APPEND:
 	case PROTOCOL_BINARY_CMD_PREPEND:
@@ -230,6 +235,18 @@ void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
 	    keylen = request_size - 24; // see above
 	    body_ptr = cmd_cache + 24;
 	    tmp_hd->request.extlen = 0;
+
+	    if (cmd == PROTOCOL_BINARY_CMD_DELETE) {
+		keylen = keylen > 250 ? 250 : keylen;
+		bodylen = 0;
+	    } else {
+		if (keylen > 250)
+		    bodylen = keylen - 250;
+		else
+		    bodylen = 1;
+		keylen -= bodylen;
+	    }
+
 	    break;
 	case PROTOCOL_BINARY_CMD_INCREMENT:
 	case PROTOCOL_BINARY_CMD_DECREMENT:
@@ -239,6 +256,8 @@ void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
 	    ((protocol_binary_request_incr *)tmp_hd)->message.body.delta = 1;
 	    ((protocol_binary_request_incr *)tmp_hd)->message.body.initial = 0;
 	    ((protocol_binary_request_incr *)tmp_hd)->message.body.expiration = 0;
+
+	    keylen = keylen > 250 ? 250 : keylen;
 	    break;
     }
 
@@ -275,8 +294,44 @@ void init_binary_message(void)
     return;
 }
 
+void alloc_message_space(void)
+{
+    if (bin_protocol == false) {
+	add_ascii_noreply = malloc(request_size);
+	set_ascii_noreply = malloc(request_size);
+	replace_ascii_noreply = malloc(request_size);
+	append_ascii_noreply = malloc(request_size);
+	prepend_ascii_noreply = malloc(request_size);
+	incr_ascii_noreply = malloc(request_size);
+	decr_ascii_noreply = malloc(request_size);
+	delete_ascii_noreply = malloc(request_size);
+
+	add_ascii_reply = malloc(request_size);
+	set_ascii_reply = malloc(request_size);
+	replace_ascii_reply = malloc(request_size);
+	append_ascii_reply = malloc(request_size);
+	prepend_ascii_reply = malloc(request_size);
+	incr_ascii_reply = malloc(request_size);
+	decr_ascii_reply = malloc(request_size);
+	delete_ascii_reply = malloc(request_size);
+    } else {
+	add_bin = malloc(request_size);
+	set_bin = malloc(request_size);
+	replace_bin = malloc(request_size);
+	append_bin = malloc(request_size);
+	prepend_bin = malloc(request_size);
+	incr_bin = malloc(request_size);
+	decr_bin = malloc(request_size);
+	delete_bin = malloc(request_size);
+    }
+
+    return;
+}
+
 void init_message(void)
 {
+    alloc_message_space();
+
     if (bin_protocol == false)
 	init_ascii_message();
     else 
@@ -433,7 +488,7 @@ test_with_regmem(void *arg) {
     void *recv_buff = malloc(BUFF_SIZE);
 
     clock_gettime(CLOCK_REALTIME, &start);
-    if (!socket_build_connection()) {
+    if (socket_build_connection()) {
         return NULL;
     }
 
@@ -455,7 +510,7 @@ test_with_regmem(void *arg) {
 	printf("Cost time: %lf secs\n", (double)(finish.tv_sec-start.tv_sec + 
                 (double)(finish.tv_nsec - start.tv_nsec)/1000000000 ));
 	
-	printf("\n ascii reply:\n");
+	printf("\nascii reply:\n");
 	clock_gettime(CLOCK_REALTIME, &start);
 	
 	for (i = 0; i < request_number; ++i) {
@@ -490,7 +545,7 @@ test_with_regmem(void *arg) {
 
     } else {
 
-	printf("\n bin reply:\n");
+	printf("\nbin reply:\n");
 	clock_gettime(CLOCK_REALTIME, &start);
 
 	for (i = 0; i < request_number; ++i){
@@ -542,6 +597,7 @@ main(int argc, char *argv[]) {
             "s:"    /* server ip */
             "R"     /* whether receive message from server */
             "v"     /* verbose */
+	    "b"     /* binary protocol */
     ))) {
         switch (c) {
             case 'c':
@@ -564,12 +620,16 @@ main(int argc, char *argv[]) {
                 break;
 	    case 'm':
 	    	request_size = atoi(optarg);
+		break;
 	    case 'b':
 	    	bin_protocol = true;
+		break;
             default:
                 assert(0);
         }
     }
+
+    printf("got!\n");
 
     if (bin_protocol == true)
     {
