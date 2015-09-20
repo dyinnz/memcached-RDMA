@@ -51,6 +51,7 @@ static int 	sock;
  *
  ******************************************************************************/
 
+static char 	*get_ascii_noreply;
 static char 	*add_ascii_noreply;
 static char 	*set_ascii_noreply;
 static char 	*replace_ascii_noreply;
@@ -60,6 +61,7 @@ static char 	*incr_ascii_noreply;
 static char 	*decr_ascii_noreply;
 static char 	*delete_ascii_noreply;
 
+static char 	*get_ascii_reply;
 static char 	*add_ascii_reply;
 static char 	*set_ascii_reply;
 static char 	*replace_ascii_reply;
@@ -72,6 +74,7 @@ static char 	*delete_ascii_reply;
 /******************************************************************************
  * Bin request
  * ****************************************************************************/
+static void 	*get_bin;
 static void 	*add_bin;
 static void 	*set_bin;
 static void 	*replace_bin;
@@ -184,6 +187,7 @@ void build_ascii_cmd(char *cmd_cache, char *cmd_name, int cmd_length, bool if_ex
 
 void init_ascii_message(void)
 {
+    build_ascii_cmd( 	get_ascii_noreply, 	"get", 		3, 	false, 	false, 	false);
     build_ascii_cmd( 	add_ascii_noreply, 	"add", 		3, 	true, 	false, 	false);
     build_ascii_cmd( 	set_ascii_noreply, 	"set", 		3, 	true, 	false, 	false);
     build_ascii_cmd( 	replace_ascii_noreply, 	"replace", 	7, 	true, 	false, 	false);
@@ -193,7 +197,7 @@ void init_ascii_message(void)
     build_ascii_cmd( 	decr_ascii_noreply, 	"decr", 	4, 	false, 	true, 	false);
     build_ascii_cmd( 	delete_ascii_noreply, 	"delete", 	6, 	false, 	false, 	false);
 
-
+    build_ascii_cmd( 	get_ascii_reply, 	"get", 		3, 	false, 	false, 	true);
     build_ascii_cmd( 	add_ascii_reply, 	"add", 		3, 	true, 	false, 	true);
     build_ascii_cmd( 	set_ascii_reply, 	"set", 		3, 	true, 	false, 	true);
     build_ascii_cmd( 	replace_ascii_reply, 	"replace", 	7, 	true, 	false, 	true);
@@ -214,12 +218,22 @@ void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
     tmp_hd = (protocol_binary_request_header *)cmd_cache;
 
     switch (cmd) {
+	case PROTOCOL_BINARY_CMD_GET:
+	    tmp_hd->request.extlen = 0;
+
+	    keylen = request_size - HEADER_LENGTH - tmp_hd->request.extlen; // for the reason of memory align, do not use sizeof(protocol_binary_request_header)!!!!!
+	    body_ptr = cmd_cache + HEADER_LENGTH + tmp_hd ->request.extlen;
+	    
+	    keylen = keylen > 250 ? 250 : keylen;
+	    valuelen = 0;
+
+	    break;
 	case PROTOCOL_BINARY_CMD_ADD:
 	case PROTOCOL_BINARY_CMD_SET:
 	case PROTOCOL_BINARY_CMD_REPLACE:
 	    tmp_hd->request.extlen = 8;
 
-	    keylen = request_size - HEADER_LENGTH - tmp_hd->request.extlen; // for the reason of memory align, do not use sizeof(protocol_binary_request_header)!!!!!!
+	    keylen = request_size - HEADER_LENGTH - tmp_hd->request.extlen; // see above
 	    body_ptr = cmd_cache + HEADER_LENGTH + tmp_hd->request.extlen;
 	    ((protocol_binary_request_set *)tmp_hd)->message.body.flags = 0;
 	    ((protocol_binary_request_set *)tmp_hd)->message.body.expiration = 0;
@@ -281,6 +295,7 @@ void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
 
 void init_binary_message(void)
 {
+    build_bin_cmd( 	get_bin, 	PROTOCOL_BINARY_CMD_GET);
     build_bin_cmd( 	add_bin, 	PROTOCOL_BINARY_CMD_ADD);
     build_bin_cmd( 	set_bin, 	PROTOCOL_BINARY_CMD_SET);
     build_bin_cmd( 	replace_bin, 	PROTOCOL_BINARY_CMD_REPLACE);
@@ -296,6 +311,7 @@ void init_binary_message(void)
 void alloc_message_space(void)
 {
     if (bin_protocol == false) {
+	get_ascii_noreply = malloc(request_size);
 	add_ascii_noreply = malloc(request_size);
 	set_ascii_noreply = malloc(request_size);
 	replace_ascii_noreply = malloc(request_size);
@@ -305,6 +321,7 @@ void alloc_message_space(void)
 	decr_ascii_noreply = malloc(request_size);
 	delete_ascii_noreply = malloc(request_size);
 
+	get_ascii_reply = malloc(request_size);
 	add_ascii_reply = malloc(request_size);
 	set_ascii_reply = malloc(request_size);
 	replace_ascii_reply = malloc(request_size);
@@ -314,6 +331,7 @@ void alloc_message_space(void)
 	decr_ascii_reply = malloc(request_size);
 	delete_ascii_reply = malloc(request_size);
     } else {
+	get_bin = malloc(request_size);
 	add_bin = malloc(request_size);
 	set_bin = malloc(request_size);
 	replace_bin = malloc(request_size);
@@ -495,6 +513,7 @@ test_with_regmem(void *arg) {
 	printf("ascii noreply:\n");
 	
 	for (i = 0; i < request_number; ++i) {
+	    send(sock, get_ascii_noreply, 	request_size, 	0);
 	    send(sock, add_ascii_noreply, 	request_size, 	0);
 	    send(sock, set_ascii_noreply, 	request_size, 	0);
 	    send(sock, replace_ascii_noreply, request_size, 	0);
@@ -513,6 +532,9 @@ test_with_regmem(void *arg) {
 	clock_gettime(CLOCK_REALTIME, &start);
 	
 	for (i = 0; i < request_number; ++i) {
+	    send(sock, get_ascii_reply, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
 	    send(sock, add_ascii_reply, 	request_size, 	0);
 	    recv(sock, recv_buff, BUFF_SIZE, 0);
 
@@ -548,6 +570,9 @@ test_with_regmem(void *arg) {
 	clock_gettime(CLOCK_REALTIME, &start);
 
 	for (i = 0; i < request_number; ++i){
+	    send(sock, get_bin, 	request_size, 	0);
+	    recv(sock, recv_buff, BUFF_SIZE, 0);
+
 	    send(sock, add_bin, 	request_size, 	0);
 	    recv(sock, recv_buff, BUFF_SIZE, 0);
 
