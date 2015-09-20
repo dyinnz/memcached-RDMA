@@ -759,7 +759,7 @@ rdma_add_sge(conn *c, const void *buf, int len) {
     assert(c->sge_used < IOV_MAX);
 
     if (settings.verbose > 2) {
-        fprintf(stderr, "debug print, buf: %s, sge num: %d\n", buf, c->sge_used);
+        fprintf(stderr, "debug print, buf: %s, sge num: %d\n", (char*)buf, c->sge_used);
     }
 
     if (c->wused + len <= c->wsize) {
@@ -6271,8 +6271,13 @@ cc_poll_event_handler(int fd, short libevent_event, void *arg) {
 
         conn *c = NULL;
         for (i = 0; i < cqe; ++i) {
-            c = hashtable_search(me->qp_hash, me->poll_wc[i].qp_num);
-            rdma_drive_machine(me->poll_wc + i, c);
+            if ( !(c = hashtable_search(me->qp_hash, me->poll_wc[i].qp_num)) ) {
+                if (settings.verbose > 0) {
+                    fprintf(stderr, "hashtable_search() failed, return NULL.\n");
+                }
+            } else {
+                rdma_drive_machine(me->poll_wc + i, c);
+            }
         }
     } while (cqe == rdma_context.poll_wc_size);
 }
@@ -6857,11 +6862,19 @@ void *hashtable_search(hashtable_t *h, int32_t key) {
     size_t hashv = calc_hash(h, key);
     hash_item_t *iter = h->T + hashv;
 
+    if (key == 0 && settings.verbose > 0) {
+        fprintf(stderr, "in hashtable_search, the key == 0\n");
+    }
+
     while (iter) {
         if (iter->key == key) {
             return iter->p;
         }
         iter = iter->next;
+    }
+
+    if (settings.verbose > 0) {
+        fprintf(stderr, "in hashtable_search, didn't find such key, %d\n", key);
     }
     return NULL;
 }
