@@ -37,7 +37,7 @@ static bool 	bin_protocol = false;
 static char     *pstr_server = "127.0.0.1";
 static char     *pstr_port = "11211";
 static int      thread_number = 1;
-static int      request_number = 10000;
+static int      request_number = 100000;
 static int 	request_size = 100;
 static int      last_time = 1000;    /* secs */
 static int      verbose = 0;
@@ -206,9 +206,10 @@ void init_ascii_message(void)
 
 void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
 {
-    int keylen, bodylen, i;
+    int keylen, valuelen, extlen, i;
     protocol_binary_request_header *tmp_hd;
     void *body_ptr; // point to the position after the header
+    const int HEADER_LENGTH = 24;
 
     tmp_hd = (protocol_binary_request_header *)cmd_cache;
 
@@ -216,65 +217,63 @@ void build_bin_cmd(void *cmd_cache, protocol_binary_command cmd)
 	case PROTOCOL_BINARY_CMD_ADD:
 	case PROTOCOL_BINARY_CMD_SET:
 	case PROTOCOL_BINARY_CMD_REPLACE:
-	    keylen = request_size - 32; // for the reason of memory align, do not use sizeof(protocol_binary_request_header)!!!!!!
-	    body_ptr = cmd_cache + 32;
 	    tmp_hd->request.extlen = 8;
+
+	    keylen = request_size - HEADER_LENGTH - tmp_hd->request.extlen; // for the reason of memory align, do not use sizeof(protocol_binary_request_header)!!!!!!
+	    body_ptr = cmd_cache + HEADER_LENGTH + tmp_hd->request.extlen;
 	    ((protocol_binary_request_set *)tmp_hd)->message.body.flags = 0;
 	    ((protocol_binary_request_set *)tmp_hd)->message.body.expiration = 0;
 
 	    if (keylen > 250)
-		bodylen = keylen - 250;
+		valuelen = keylen - 250;
 	    else
-		bodylen = 1;
-	    keylen -= bodylen;
+		valuelen = 1;
+	    keylen -= valuelen;
 
 	    break;
 	case PROTOCOL_BINARY_CMD_APPEND:
 	case PROTOCOL_BINARY_CMD_PREPEND:
 	case PROTOCOL_BINARY_CMD_DELETE:
-	    keylen = request_size - 24; // see above
-	    body_ptr = cmd_cache + 24;
 	    tmp_hd->request.extlen = 0;
+
+	    keylen = request_size - HEADER_LENGTH - tmp_hd->request.extlen; // see above
+	    body_ptr = cmd_cache + HEADER_LENGTH + tmp_hd->request.extlen;
 
 	    if (cmd == PROTOCOL_BINARY_CMD_DELETE) {
 		keylen = keylen > 250 ? 250 : keylen;
-		bodylen = 0;
+		valuelen = 0;
 	    } else {
 		if (keylen > 250)
-		    bodylen = keylen - 250;
+		    valuelen = keylen - 250;
 		else
-		    bodylen = 1;
-		keylen -= bodylen;
+		    valuelen = 1;
+		keylen -= valuelen;
 	    }
 
 	    break;
 	case PROTOCOL_BINARY_CMD_INCREMENT:
 	case PROTOCOL_BINARY_CMD_DECREMENT:
-	    keylen = request_size - 44; // see above
-	    body_ptr = cmd_cache + 44;
 	    tmp_hd->request.extlen = 20;
+
+	    keylen = request_size - HEADER_LENGTH - tmp_hd->request.extlen; // see above
+	    body_ptr = cmd_cache + HEADER_LENGTH + tmp_hd->request.extlen;
 	    ((protocol_binary_request_incr *)tmp_hd)->message.body.delta = 1;
 	    ((protocol_binary_request_incr *)tmp_hd)->message.body.initial = 0;
 	    ((protocol_binary_request_incr *)tmp_hd)->message.body.expiration = 0;
 
 	    keylen = keylen > 250 ? 250 : keylen;
+	    valuelen = 0;
 	    break;
     }
-
-    if (keylen > 250)
-	bodylen = keylen - 250;
-    else
-	bodylen = 1;
-    keylen -= bodylen;
 
     tmp_hd->request.magic = PROTOCOL_BINARY_REQ;
     tmp_hd->request.opcode = cmd;
     tmp_hd->request.keylen = htons(keylen);
     tmp_hd->request.datatype = PROTOCOL_BINARY_RAW_BYTES;
-    tmp_hd->request.bodylen = htonl(bodylen);
+    tmp_hd->request.bodylen = htonl(tmp_hd->request.extlen + keylen + valuelen);
     tmp_hd->request.reserved = tmp_hd->request.opaque = tmp_hd->request.cas = 0;
 
-    for (i = 0 ; i < keylen + bodylen; i++)
+    for (i = 0 ; i < keylen + valuelen; i++)
 	write_to_buff(&body_ptr, "1", 1);
 
     return;
@@ -545,7 +544,7 @@ test_with_regmem(void *arg) {
 
     } else {
 
-	printf("\nbin reply:\n");
+	printf("bin reply:\n");
 	clock_gettime(CLOCK_REALTIME, &start);
 
 	for (i = 0; i < request_number; ++i){
@@ -628,8 +627,6 @@ main(int argc, char *argv[]) {
                 assert(0);
         }
     }
-
-    printf("got!\n");
 
     if (bin_protocol == true)
     {
