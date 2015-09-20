@@ -280,6 +280,7 @@ static void settings_init(void) {
     rdma_context.buff_size = 1024 * 16;
     rdma_context.poll_wc_size = 128 + 5;
     rdma_context.ack_events = 16;
+    rdma_context.device_index = 0;
 }
 
 /*
@@ -5152,7 +5153,7 @@ static int init_rdma_global_resources() {
         return -1;
     }
     /* Assume only one device */
-    rdma_context.device_ctx_used = rdma_context.device_ctx_list[0];
+    rdma_context.device_ctx_used = rdma_context.device_ctx_list[rdma_context.device_index];
 
     if (settings.verbose > 0) {
         fprintf(stderr, "Device number: %d\n", num_device);
@@ -5299,8 +5300,11 @@ int main (int argc, char **argv) {
           "S"   /* Sasl ON */
           "F"   /* Disable flush_all */
           "o:"  /* Extended generic options */
+
           "Y:"  /* buff per thread */
           "Z:"  /* poll wc size */
+          "K:"  /* the size of memories we book in advance */
+          "x:"  /* the index of the used device */
         ))) {
         switch (c) {
         case 'Z':
@@ -5308,6 +5312,12 @@ int main (int argc, char **argv) {
             break;
         case 'Y':
             rdma_context.buff_per_thread = atoi(optarg);
+            break;
+        case 'K':
+            rdma_context.buff_size = atoi(optarg);
+            break;
+        case 'x':
+            rdma_context.device_index = atoi(optarg);
             break;
         case 'A':
             /* enables "shutdown" command */

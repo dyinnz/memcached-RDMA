@@ -689,6 +689,7 @@ void cc_poll_event_handler(int fd, short libevent_event, void *arg);
 struct rdma_context {
     struct ibv_context          **device_ctx_list;
     struct ibv_context          *device_ctx_used;
+    int                         device_index;
     struct rdma_event_channel   *cm_channel;
     struct event                listen_event; 
 
