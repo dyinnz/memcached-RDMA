@@ -5304,6 +5304,7 @@ int main (int argc, char **argv) {
           "Y:"  /* buff per thread */
           "Z:"  /* poll wc size */
           "K:"  /* the size of memories we book in advance */
+          "x:"  /* the index of the used device */
         ))) {
         switch (c) {
         case 'Z':
@@ -5314,6 +5315,9 @@ int main (int argc, char **argv) {
             break;
         case 'K':
             rdma_context.buff_size = atoi(optarg);
+            break;
+        case 'x':
+            rdma_context.device_index = atoi(optarg);
             break;
         case 'A':
             /* enables "shutdown" command */
