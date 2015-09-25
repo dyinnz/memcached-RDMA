@@ -763,6 +763,10 @@ rdma_add_sge(conn *c, const void *buf, int len) {
         fprintf(stderr, "debug print, buf: %s, sge num: %d\n", (char*)buf, c->sge_used);
     }
 
+    if (0 == strncmp("END\r\n", buf, 5 < len ? 5 : len)) {
+        return 0;
+    }
+
     if (c->wused + len <= c->wsize) {
         memmove(c->wbuf + c->wused, buf, len);
         c->wused += len;
@@ -776,6 +780,7 @@ rdma_add_sge(conn *c, const void *buf, int len) {
 
     } else {
         if (c->wmr_used == c->sge_size) {
+            perror("need more sge!\n");
             return -1;
         }
 
@@ -6139,7 +6144,7 @@ rdma_conn_new() {
     c->hdrbuf = 0;
 
     c->rsize = rdma_context.buff_size;
-    c->wsize = DATA_BUFFER_SIZE;
+    c->wsize = rdma_context.buff_size + 300;
     c->isize = ITEM_LIST_INITIAL;
     c->suffixsize = SUFFIX_LIST_INITIAL;
     c->iovsize = IOV_LIST_INITIAL;
@@ -6393,7 +6398,6 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     }
                     
                     if (0 != c->remote_addr && 0 != c->remote_rkey) {
-                        fprintf(stderr, "post write ack ok!\n");
                         c->remote_addr = 0;
                         c->remote_rkey = 0;
                     }
@@ -6433,7 +6437,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     if (settings.verbose > 2) {
                         fprintf(stderr, "rdma write operation achieve\r\n");
                     }
-                    static char write_ack_buff[] = "ack\r\n";
+                    static char write_ack_buff[] = "END\r\n";
                     if ( !c->write_ack_mr && !(c->write_ack_mr = rdma_reg_msgs(c->id, write_ack_buff, sizeof(write_ack_buff))) ) {
                         if (settings.verbose > 2) {
                             perror("ahieving write operation, rdma_reg_msgs()");
@@ -6537,6 +6541,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                     if (settings.verbose > 2) {
                         fprintf(stderr, "post read ok, rlbytes: %d\n", c->rlbytes);
                     }
+                    stop = true;
                     break;
 
                 } else {
@@ -6545,14 +6550,18 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
                         c->rlbytes = 0;
                     }
                     if (settings.verbose > 2) {
-                        fprintf(stderr, "rdma read ok, rlbytes: %d\n", c->rlbytes);
+                        fprintf(stderr, "rdma read ok, rlbytes: %d, buff:\n%s\n", c->rlbytes, c->ritem);
+                    }
+                    if (settings.verbose > 2) {
+                        fprintf(stderr, "wc opcode: %d", (int)(wc->opcode));
                     }
                     if (0 != c->rlbytes) {
                         conn_set_state(c, conn_closing);
                     }
 
                     rdma_dereg_mr(c->read_mr);
-                    /* clean the two attribution */
+                    /* clean the attribution */
+                    c->read_mr = 0;
                     c->remote_addr = 0;
                     c->remote_rkey = 0;
                     break;
