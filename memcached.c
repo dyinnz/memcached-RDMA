@@ -6420,11 +6420,7 @@ rdma_drive_machine(struct ibv_wc *wc, conn *c) {
 
                     if (c->write_state == conn_mwrite) {
                         conn_release_items(c);
-                        if(c->protocol == binary_prot) {
-                            conn_set_state(c, c->write_and_go);
-                        } else {
-                            conn_set_state(c, conn_new_cmd);
-                        }
+                        conn_set_state(c, conn_new_cmd);
                     } else if (c->write_state == conn_write) {
                         if (c->write_and_free) {
                             free(c->write_and_free);
