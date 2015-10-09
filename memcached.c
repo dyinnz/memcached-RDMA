@@ -277,7 +277,7 @@ static void settings_init(void) {
     rdma_context.srq_size = 1024;
     rdma_context.cq_size = 1024;
     rdma_context.buff_per_thread = 128;
-    rdma_context.buff_size = 1024 * 16;
+    rdma_context.buff_size = 1024 * 1024;
     rdma_context.poll_wc_size = 128 + 5;
     rdma_context.ack_events = 16;
     rdma_context.device_index = 0;
